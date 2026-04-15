@@ -1,0 +1,25 @@
+[gd_scene load_steps=5 format=3 uid="uid://bdib8itqkd8uu"]
+
+[ext_resource type="Script" uid="uid://ch8bbcg0qp5g3" path="res://scripts/module/snap_point_component.gd" id="1_4ersg"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_kfoul"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_4ersg"]
+shading_mode = 0
+albedo_color = Color(0.3882353, 0.84313726, 0.96862745, 0.39215687)
+
+[sub_resource type="BoxMesh" id="BoxMesh_4ersg"]
+material = SubResource("StandardMaterial3D_4ersg")
+
+[node name="Snap_Point" type="Area3D"]
+transform = Transform3D(0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0, 0)
+collision_layer = 128
+collision_mask = 0
+script = ExtResource("1_4ersg")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_kfoul")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_4ersg")
+skeleton = NodePath("")

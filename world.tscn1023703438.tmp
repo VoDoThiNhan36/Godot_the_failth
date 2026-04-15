@@ -1,0 +1,53 @@
+[gd_scene load_steps=8 format=3 uid="uid://idfrf7p8dj7j"]
+
+[ext_resource type="Script" uid="uid://b7wdtuj4ogtyy" path="res://builder.gd" id="1_f3sb7"]
+[ext_resource type="PackedScene" uid="uid://cfefaxmmwttmu" path="res://module_inventory.tscn" id="2_fj7yv"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_f3sb7"]
+sky_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
+ground_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
+
+[sub_resource type="Sky" id="Sky_fj7yv"]
+sky_material = SubResource("ProceduralSkyMaterial_f3sb7")
+
+[sub_resource type="Environment" id="Environment_tlwt5"]
+background_mode = 2
+sky = SubResource("Sky_fj7yv")
+tonemap_mode = 2
+glow_enabled = true
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_fj7yv"]
+size = Vector3(10, 0.2, 10)
+
+[sub_resource type="BoxMesh" id="BoxMesh_tlwt5"]
+size = Vector3(10, 0.2, 10)
+
+[node name="Node3D" type="Node3D"]
+script = ExtResource("1_f3sb7")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_tlwt5")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Inventory" type="ItemList" parent="UI"]
+offset_right = 147.0
+offset_bottom = 504.0
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.781096, 0.624411, 0, -0.624411, 0.781096, 0, 4.17976, 5.40232)
+
+[node name="Module_Inventory" parent="." instance=ExtResource("2_fj7yv")]
+visible = false
+offset_left = 151.0
+offset_top = 1.0
+offset_right = -921.0
+offset_bottom = -141.0
+
+[node name="StaticBody3D" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D"]
+shape = SubResource("BoxShape3D_fj7yv")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="StaticBody3D"]
+mesh = SubResource("BoxMesh_tlwt5")

@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="Module" load_steps=6 format=3 uid="uid://v5p5y27u356g"]
+
+[ext_resource type="Script" uid="uid://tfeowkhqe8ls" path="res://scripts/module/module.gd" id="1_3ra3o"]
+[ext_resource type="Script" uid="uid://7sok8tdh5scd" path="res://scripts/module/snap_point.gd" id="2_3ra3o"]
+[ext_resource type="Texture2D" uid="uid://bpur1it8fksuu" path="res://modules/module_UI/module_image/extra_01.png" id="3_3ra3o"]
+
+[sub_resource type="Resource" id="Resource_3ra3o"]
+script = ExtResource("2_3ra3o")
+position = Vector3(-0.5, 0, 0)
+normal = Vector3(-1, 0, 0)
+allowed_types = Array[int]([2])
+metadata/_custom_type_script = "uid://7sok8tdh5scd"
+
+[sub_resource type="Resource" id="Resource_sb73x"]
+script = ExtResource("2_3ra3o")
+position = Vector3(0.5, 0, 0)
+normal = Vector3(1, 0, 1)
+allowed_types = Array[int]([0])
+metadata/_custom_type_script = "uid://7sok8tdh5scd"
+
+[resource]
+script = ExtResource("1_3ra3o")
+module_id = "extra_01"
+name = "extra_01"
+mass = 30
+scene_path = "res://modules/module_scenes/extra_01.tscn"
+texture_2d = ExtResource("3_3ra3o")
+attach_face_vector = Vector3(0, -1, 0)
+module_type = 1
+snap_points = Array[ExtResource("2_3ra3o")]([SubResource("Resource_3ra3o"), SubResource("Resource_sb73x")])
+metadata/_custom_type_script = "uid://tfeowkhqe8ls"

@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="Module" load_steps=4 format=3 uid="uid://dfy4ssilyuffq"]
+
+[ext_resource type="Script" uid="uid://tfeowkhqe8ls" path="res://scripts/module/module.gd" id="1_fpucn"]
+[ext_resource type="Texture2D" uid="uid://bpnomwgg8sfm4" path="res://modules/module_UI/module_image/prow_01.png" id="2_fpucn"]
+[ext_resource type="Script" uid="uid://7sok8tdh5scd" path="res://scripts/module/snap_point.gd" id="2_q31qa"]
+
+[resource]
+script = ExtResource("1_fpucn")
+module_id = "prow_01"
+name = "prow_01"
+mass = 20
+scene_path = "res://modules/module_scenes/prow_01.tscn"
+texture_2d = ExtResource("2_fpucn")
+attach_face_vector = Vector3(-1, 0, 0)
+category = 1
+metadata/_custom_type_script = "uid://tfeowkhqe8ls"

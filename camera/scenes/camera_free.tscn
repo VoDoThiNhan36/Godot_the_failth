@@ -1,0 +1,14 @@
+[gd_scene load_steps=3 format=3 uid="uid://cbgt5o6jqyxo2"]
+
+[ext_resource type="PackedScene" path="res://camera/scenes/camera_base.tscn" id="1_d5snr"]
+[ext_resource type="Script" uid="uid://bgaglfjvvbcfv" path="res://camera/scripts/camera_free_node.gd" id="2_5bro4"]
+
+[node name="Camera_Free" instance=ExtResource("1_d5snr")]
+script = ExtResource("2_5bro4")
+acceleration = 100.0
+move_speed = 18.0
+min_camera_zoom = 0.0
+max_camera_zoom = 0.0
+
+[node name="SpringArm3D" parent="." index="0"]
+collision_mask = 0

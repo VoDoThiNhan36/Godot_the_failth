@@ -1,0 +1,41 @@
+[gd_scene load_steps=6 format=3 uid="uid://bh2vi0aw8bri4"]
+
+[ext_resource type="PackedScene" path="res://scenes/ship_part.tscn" id="1_l3rv8"]
+[ext_resource type="Script" uid="uid://cxic72j66nlfj" path="res://scripts/movement/ship_movement.gd" id="1_y8gn2"]
+[ext_resource type="PackedScene" uid="uid://mtagy60tsl4h" path="res://camera/scenes/camera_character.tscn" id="4_l5wq2"]
+[ext_resource type="Script" path="res://scripts/movement/debug_trail.gd" id="4_r6fdk"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_4icm7"]
+height = 5.22243
+
+[node name="Ship_Player" type="Node"]
+
+[node name="RigidBody3D" type="RigidBody3D" parent="."]
+mass = 66.795
+script = ExtResource("1_y8gn2")
+
+[node name="Ship_part" parent="RigidBody3D" instance=ExtResource("1_l3rv8")]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RigidBody3D"]
+transform = Transform3D(1.91069e-15, 4.37114e-08, 1, 1, -4.37114e-08, 0, 4.37114e-08, 1, -4.37114e-08, 0, 0.795, -0.124289)
+shape = SubResource("CapsuleShape3D_4icm7")
+
+[node name="Camera_Pivot_Far" parent="RigidBody3D" instance=ExtResource("4_l5wq2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 6, 10)
+min_zoom = 1.0
+
+[node name="Camera_Pivot_Close" parent="RigidBody3D" instance=ExtResource("4_l5wq2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.530899, 0)
+min_zoom = 0.0
+max_zoom = 1.0
+spring_arm_length = 0.0
+
+[node name="DebugTrail" type="MeshInstance3D" parent="RigidBody3D"]
+script = ExtResource("4_r6fdk")
+
+[node name="RichTextLabel" type="RichTextLabel" parent="."]
+offset_left = 13.0
+offset_top = 7.0
+offset_right = 602.0
+offset_bottom = 464.0
+bbcode_enabled = true

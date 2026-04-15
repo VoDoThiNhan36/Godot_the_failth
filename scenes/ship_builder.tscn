@@ -1,0 +1,92 @@
+[gd_scene load_steps=13 format=3 uid="uid://idfrf7p8dj7j"]
+
+[ext_resource type="Script" uid="uid://b7wdtuj4ogtyy" path="res://scenes/ship_builder.gd" id="1_u7e0p"]
+[ext_resource type="PackedScene" uid="uid://b3hu0tihlwody" path="res://modules/module_scenes/extra_01.tscn" id="3_2y0db"]
+[ext_resource type="PackedScene" uid="uid://cbgt5o6jqyxo2" path="res://camera/scenes/camera_free.tscn" id="5_u7e0p"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_f3sb7"]
+sky_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
+ground_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
+
+[sub_resource type="Sky" id="Sky_fj7yv"]
+sky_material = SubResource("ProceduralSkyMaterial_f3sb7")
+
+[sub_resource type="Environment" id="Environment_tlwt5"]
+background_mode = 2
+sky = SubResource("Sky_fj7yv")
+tonemap_mode = 2
+glow_enabled = true
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_fj7yv"]
+size = Vector3(100, 0.2, 100)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dwbse"]
+albedo_color = Color(0.4426157, 0.22735786, 0.05316955, 1)
+
+[sub_resource type="BoxMesh" id="BoxMesh_tlwt5"]
+material = SubResource("StandardMaterial3D_dwbse")
+size = Vector3(100, 0.2, 100)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_036b0"]
+albedo_color = Color(0.4627451, 0.5372549, 1, 1)
+
+[sub_resource type="PrismMesh" id="PrismMesh_dwbse"]
+material = SubResource("StandardMaterial3D_036b0")
+size = Vector3(10, 10, 10)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_036b0"]
+
+[node name="Node3D" type="Node"]
+script = ExtResource("1_u7e0p")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.8660254, -0.43301278, 0.25, 0, 0.49999997, 0.86602545, -0.50000006, 0.75, -0.43301266, 0, 40.93834, 0)
+shadow_enabled = true
+directional_shadow_max_distance = 1.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_tlwt5")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Inventory" type="ItemList" parent="UI"]
+offset_right = 147.0
+offset_bottom = 504.0
+allow_reselect = true
+
+[node name="StaticBody3D" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D"]
+shape = SubResource("BoxShape3D_fj7yv")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="StaticBody3D"]
+mesh = SubResource("BoxMesh_tlwt5")
+
+[node name="extra_01_Root" parent="." instance=ExtResource("3_2y0db")]
+transform = Transform3D(1, 0, 0, 0, 0.9298086, 0.36804342, 0, -0.36804342, 0.9298086, -0.11491, 1.77984, -0.0548899)
+
+[node name="StaticBody3D2" type="StaticBody3D" parent="."]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="StaticBody3D2"]
+transform = Transform3D(-0.036504187, 0, -0.9993335, 0, 1, 0, 0.9993335, 0, -0.036504187, 0, 0, -14.319439)
+mesh = SubResource("PrismMesh_dwbse")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D2"]
+transform = Transform3D(9.993684, 0.049367722, -0.068266205, 0.062057145, 4.486772, 0.88253677, 0.34986344, -2.2060082, 1.7934521, 0, 2.2389984, -14.080206)
+shape = SubResource("BoxShape3D_036b0")
+
+[node name="RichTextLabel" type="RichTextLabel" parent="."]
+offset_left = 749.0
+offset_top = 1.0
+offset_right = 1142.0
+offset_bottom = 254.0
+bbcode_enabled = true
+text = "Demiurg ship as your orders!
+"
+horizontal_alignment = 2
+
+[node name="Camera_Free" parent="." instance=ExtResource("5_u7e0p")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 7.459239, 15.791031)
+visible = true
+min_vertical_angle = -1.5707963267948966
+max_vertical_angle = 1.5707963267948966
