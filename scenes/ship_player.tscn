@@ -11,8 +11,10 @@ height = 5.22243
 [node name="Ship_Player" type="Node"]
 
 [node name="RigidBody3D" type="RigidBody3D" parent="."]
-mass = 66.795
+mass = 31.525
+gravity_scale = 0.0
 script = ExtResource("1_y8gn2")
+angular_damp_value = 3.0
 
 [node name="Ship_part" parent="RigidBody3D" instance=ExtResource("1_l3rv8")]
 
