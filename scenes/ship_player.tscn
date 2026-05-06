@@ -1,9 +1,12 @@
-[gd_scene load_steps=6 format=3 uid="uid://bh2vi0aw8bri4"]
+[gd_scene load_steps=7 format=3 uid="uid://bh2vi0aw8bri4"]
 
 [ext_resource type="PackedScene" path="res://scenes/ship_part.tscn" id="1_l3rv8"]
-[ext_resource type="Script" uid="uid://cxic72j66nlfj" path="res://scripts/movement/ship_movement.gd" id="1_y8gn2"]
+[ext_resource type="Script" uid="uid://bbut2vw07v6ey" path="res://scripts/movement/ship_movement_integrate.gd" id="1_y8gn2"]
 [ext_resource type="PackedScene" uid="uid://mtagy60tsl4h" path="res://camera/scenes/camera_character.tscn" id="4_l5wq2"]
 [ext_resource type="Script" path="res://scripts/movement/debug_trail.gd" id="4_r6fdk"]
+
+[sub_resource type="PhysicsMaterial" id="PhysicsMaterial_y8gn2"]
+friction = 0.0
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_4icm7"]
 height = 5.22243
@@ -11,15 +14,21 @@ height = 5.22243
 [node name="Ship_Player" type="Node"]
 
 [node name="RigidBody3D" type="RigidBody3D" parent="."]
-mass = 31.525
+mass = 2000.0
+physics_material_override = SubResource("PhysicsMaterial_y8gn2")
 gravity_scale = 0.0
+can_sleep = false
+freeze_mode = 1
 script = ExtResource("1_y8gn2")
-angular_damp_value = 3.0
+max_thrust_force = 500.0
+max_turn_torque = 250.0
+rotation_start_delay = 1.0
+angular_stable_power_ratio = 0.2
 
 [node name="Ship_part" parent="RigidBody3D" instance=ExtResource("1_l3rv8")]
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="RigidBody3D"]
-transform = Transform3D(1.91069e-15, 4.37114e-08, 1, 1, -4.37114e-08, 0, 4.37114e-08, 1, -4.37114e-08, 0, 0.795, -0.124289)
+transform = Transform3D(1.910689e-15, 4.371139e-08, 1, 1, -4.371139e-08, -3.59989e-21, 4.371139e-08, 1, -4.371139e-08, 0, 0.795, -0.124289)
 shape = SubResource("CapsuleShape3D_4icm7")
 
 [node name="Camera_Pivot_Far" parent="RigidBody3D" instance=ExtResource("4_l5wq2")]
@@ -35,9 +44,23 @@ spring_arm_length = 0.0
 [node name="DebugTrail" type="MeshInstance3D" parent="RigidBody3D"]
 script = ExtResource("4_r6fdk")
 
+[node name="Node3D" type="Node3D" parent="RigidBody3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 1)
+
 [node name="RichTextLabel" type="RichTextLabel" parent="."]
 offset_left = 13.0
 offset_top = 7.0
-offset_right = 602.0
-offset_bottom = 464.0
+offset_right = 570.0
+offset_bottom = 644.0
 bbcode_enabled = true
+
+[node name="RichTextLabel2" type="RichTextLabel" parent="."]
+offset_left = 853.0
+offset_top = 3.0
+offset_right = 1150.0
+offset_bottom = 460.0
+bbcode_enabled = true
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.7084684, 0)
+visible = false

@@ -31,10 +31,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		rotation.x = clamp(rotation.x, min_vertical_angle, max_vertical_angle)
 
 	# Zoom
-	if event.is_action_pressed("camera_zoom_in"):
-		spring_arm.spring_length = max(min_zoom, spring_arm.spring_length - 1.0)
-	if event.is_action_pressed("camera_zoom_out"):
-		spring_arm.spring_length = min(max_zoom, spring_arm.spring_length + 1.0)
+	if Input.is_action_pressed("sequence_move"): 
+			return # Không xoay khi đang giữ phím di chuyển sequence
+	
+	else:
+		if event.is_action_pressed("camera_zoom_in"):
+			spring_arm.spring_length = max(min_zoom, spring_arm.spring_length - 1.0)
+		if event.is_action_pressed("camera_zoom_out"):
+			spring_arm.spring_length = min(max_zoom, spring_arm.spring_length + 1.0)
 
 func _process(delta: float) -> void:
 	if not is_active: return

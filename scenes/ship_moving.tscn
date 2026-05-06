@@ -1,7 +1,7 @@
 [gd_scene load_steps=11 format=3 uid="uid://432kub5m0ib6"]
 
 [ext_resource type="PackedScene" uid="uid://bh2vi0aw8bri4" path="res://scenes/ship_player.tscn" id="1_8br57"]
-[ext_resource type="Script" uid="uid://bqjqi002hegrt" path="res://scenes/ship_moving.gd" id="1_vtupg"]
+[ext_resource type="Script" uid="uid://bqjqi002hegrt" path="res://scenes/ship_moving_scene.gd" id="1_vtupg"]
 [ext_resource type="PackedScene" uid="uid://cbgt5o6jqyxo2" path="res://camera/scenes/camera_free.tscn" id="2_vtupg"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_fj7yv"]

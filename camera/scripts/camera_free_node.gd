@@ -20,14 +20,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	# Xoay camera bằng chuột
 	# Xoay theo 2 node: Node gốc xoay ngang, node spring arm xoay dọc
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		# Nhìn trái/phải: Xoay toàn bộ cụm theo trục Y
-		rotation.y -= event.relative.x * mouse_sensitivity
+		if Input.is_action_pressed("sequence_move"): 
+			return # Không xoay khi đang giữ phím di chuyển sequence
 		
-		# Nhìn lên/xuống: Chỉ xoay SpringArm theo trục X (Đảo dấu trừ thành trừ)
-		spring_arm.rotation.x -= event.relative.y * mouse_sensitivity
-		
-		# Giới hạn góc nhìn lên xuống không bị lộn vòng (90 độ)
-		spring_arm.rotation.x = clamp(spring_arm.rotation.x, min_vertical_angle, max_vertical_angle)
+		else:
+			# Nhìn trái/phải: Xoay toàn bộ cụm theo trục Y
+			rotation.y -= event.relative.x * mouse_sensitivity
+			
+			# Nhìn lên/xuống: Chỉ xoay SpringArm theo trục X (Đảo dấu trừ thành trừ)
+			spring_arm.rotation.x -= event.relative.y * mouse_sensitivity
+			
+			# Giới hạn góc nhìn lên xuống không bị lộn vòng (90 độ)
+			spring_arm.rotation.x = clamp(spring_arm.rotation.x, min_vertical_angle, max_vertical_angle)
 
 	# Zoom camera
 	#if event.is_action_pressed("camera_zoom_in"):

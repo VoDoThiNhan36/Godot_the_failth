@@ -22,14 +22,18 @@ extends RigidBody3D         # Mới: dùng apply_central_force() + apply_torque(
 # ============================== ROTATION PHYSICS ======================================
 
 @export_group("Rotation Physics")
+@export var pid_rot_p := 20.0       # Lực bẻ lái tỉ lệ thuận với độ lệch góc (Proportional)
+@export var pid_rot_i := 0.0        # Bù sai số tích lũy (Integral - thường để 0 trong không gian)
+@export var pid_rot_d := 10.0       # Lực hãm đà tỉ lệ với vận tốc góc (Derivative - Chống rung lắc)
+var rot_error_integral := 0.0       # Biến lưu trữ sai số tích lũy cho I
 @export var angular_acceleration := 8.0        # Sức mạnh động cơ xoay — nhân mass thành torque (N*m/kg)
-@export var angular_braking := 6.0             # Sức mạnh phanh xoay (N*m/kg)
+#@export var angular_braking := 6.0             # Sức mạnh phanh xoay (N*m/kg)
 @export var max_turn_speed := 1.0              # Tốc độ xoay tối đa (rad/s)
-@export var turn_sensitivity := 3.0            # Độ nhạy vô lăng — góc lệch × sensitivity = desired speed
+#@export var turn_sensitivity := 3.0            # Độ nhạy vô lăng — góc lệch × sensitivity = desired speed
 @export var roll_correction_torque := 40.0     # Lực kéo roll về 0 (N*m/kg)
 @export var max_pitch_angle := 45.0            # Góc pitch tối đa (độ)
 @export var stabilization_speed := 2.0         # Tốc độ tự cân bằng khi IDLE
-@export var angular_damp_value := 1.0          # Damping xoay — gán vào RigidBody3D.angular_damp
+@export var angular_damp_value := 1.0          # Hệ số cản xoay thủ công — dùng trong apply_torque() của script, KHÔNG gán vào RigidBody3D.angular_damp (đã tắt = 0)
 
 # Lý do comment out: RigidBody3D có sẵn angular_velocity dạng Vector3
 # Biến float thủ công này không cần thiết nữa, engine tự track qua angular_velocity Vector3
@@ -77,6 +81,7 @@ var ship_length: float                               # Độ dài tàu (tính t�
 # @onready var ship_part: CharacterBody3D = $"."   # Cũ
 @onready var ship_part: RigidBody3D = $"."          # Mới: khớp type với node gốc
 @onready var rich_text_label: RichTextLabel = $"../RichTextLabel"
+@onready var rich_text_label_2: RichTextLabel = $"../RichTextLabel2"
 
 # ============================== DEBUG MESH ======================================
 
@@ -102,7 +107,7 @@ func _ready() -> void:
 	gravity_scale = 0.0                  # Tắt gravity: tàu vũ trụ không rơi
 	lock_rotation = false                # Cho phép xoay tự do, cân bằng bằng torque
 	linear_damp = linear_damp_value      # Gán damping tịnh tiến từ export var để tunable
-	angular_damp = angular_damp_value    # Gán damping xoay từ export var để tunable
+	angular_damp = 0.0                   # Tắt engine angular_damp: script tự quản lý hoàn toàn bằng apply_torque
 
 	# 3. Setup Fajen avoidance area
 	setup_fajen_area()
@@ -244,7 +249,8 @@ func handle_state_move(delta: float) -> void:
 	## Tính quãng đường phanh tối thiểu: s = v² / (2 * a), a = max_brake_force
 	# Lý do đổi: velocity → linear_velocity
 	# var min_stopping_distance = pow(velocity.length(), 2) / (2.0 * max_brake_force / mass)   # Cũ
-	var min_stopping_distance = pow(linear_velocity.length(), 2) / (2.0 * max_brake_force / mass)  # Mới
+	var min_stopping_distance = pow(linear_velocity.length(), 2) / (2.0 * (max_brake_force / mass))  # Mới
+	min_stopping_distance = clamp(min_stopping_distance, distance_threshold, min_stopping_distance)
 
 	var ship_heading_vector = -global_transform.basis.z  # Hướng mũi tàu (trục -Z local)
 	var direction_to_target = current_position.direction_to(target_position)  # Hướng thẳng đến target
@@ -258,94 +264,93 @@ func handle_state_move(delta: float) -> void:
 	# distance rất nhỏ → direction_to_target không ổn định → tàu xoay loạn
 	# Fix: giữ nguyên current_target_direction, bỏ qua tính toán steering/fajen
 	# =========================================================
-	if is_at_current_waypoint_threshold and ship_movement_waypoints.is_empty():
-		raw_direction = current_target_direction      # Giữ hướng cũ, không tính lại
-		desired_direction = current_target_direction  # Không để direction_to_target gây loạn
+	#if is_at_current_waypoint_threshold and ship_movement_waypoints.is_empty():
+		#raw_direction = current_target_direction      # Giữ hướng cũ, không tính lại
+		#desired_direction = current_target_direction  # Không để direction_to_target gây loạn
+	#else:
+	
+	# =========================================================
+	# BLENDING DIRECTION: Gần đích thì xoay hướng từ từ vào target direction ban đầu cho mượt
+	# =========================================================
+	# Định nghĩa khoảng cách bắt đầu blend hướng
+	var rotation_blend_distance = distance_threshold * 2.0
+
+	# Gán hướng dựa trên blend distance
+	if distance > rotation_blend_distance:
+		# Ở xa: hoàn toàn hướng về target
+		is_at_current_waypoint_threshold = false
+		raw_direction = direction_to_target
+	
+	# Khoảng cách chạm ngưỡng cần dừng và quay hướng
+	elif distance > distance_threshold:
+		# Tránh trường hợp ship bị lặp vô tận khi đổi target direction liên tục ở điểm giữa
+		if not is_at_current_waypoint_threshold:
+			var blend_weight = (distance - distance_threshold) / rotation_blend_distance
+			blend_weight = clamp(blend_weight, 0.8, 1.0)
+			
+			# Slerp giữa hướng đích đến và hướng click chuột ban đầu
+			raw_direction = current_target_direction.slerp(direction_to_target, blend_weight).normalized()
+			
+	# Khoảng cách chạm đích
 	else:
-		# Định nghĩa khoảng cách bắt đầu blend hướng
-		var rotation_blend_distance = distance_threshold * 2.0
+		is_at_current_waypoint_threshold = true
+		raw_direction = current_target_direction
 
-		# Gán hướng dựa trên blend distance
-		if distance > rotation_blend_distance:
-			# Ở xa: hoàn toàn hướng về target
-			is_at_current_waypoint_threshold = false
-			raw_direction = direction_to_target
+	# =========================================================
+	# STEERING: Fajen (xa) hoặc manual torque (gần)
+	# =========================================================
+	# Tính desired direction theo thuật toán steering khi distance còn xa
+	if distance > ship_length * 5.0:
+		# Gán default desired direction theo raw
+		desired_direction = raw_direction
+		
+		## Steering theo thuật toán Fajen - Angular steering
+		if current_steering_mode == ShipSteeringMode.FAJEN_WARREN:
+			# FIX "XOAY VÒNG TRÒN": Lấy vận tốc góc THỰC TẾ của RigidBody3D 
+			# x = pitch (quanh trục X local), y = yaw (quanh trục Y global)
+			var real_angular_vel = Vector2(
+				angular_velocity.dot(global_transform.basis.x),
+				angular_velocity.dot(Vector3.UP)
+			)
 
-		elif distance > distance_threshold:
-			# Vùng blend: nội suy hướng để tránh flip đột ngột
-			if not is_at_current_waypoint_threshold:
-				var blend_weight = (distance - distance_threshold) / rotation_blend_distance
-				# distance = rotation_blend_distance (rìa ngoài) → weight = 1.0 (100% direction_to_target)
-				# distance = distance_threshold (rìa trong)      → weight = 0.0 (100% current_target_direction)
-				blend_weight = clamp(blend_weight, 0.0, 1.0)
-				raw_direction = current_target_direction.slerp(direction_to_target, blend_weight).normalized()
+			# Truyền vận tốc góc THỰC vào Fajen (hàm Fajen đã có sẵn lực Damping hãm đà bên trong)
+			var fajen_result = compute_fajen_angular_acceleration(ship_heading_vector, raw_direction, real_angular_vel)
+			var raw_fajen_acceleration: Vector2 = fajen_result["angular_accel"]  
+			var total_repulsion: float = fajen_result["repulsion_force"]  
+
+			# Giới hạn gia tốc theo sức m��nh động cơ (angular_acceleration)
+			var applied_accel_pitch = clamp(raw_fajen_acceleration.x, -angular_acceleration, angular_acceleration)
+			var applied_accel_yaw   = clamp(raw_fajen_acceleration.y, -angular_acceleration, angular_acceleration)
+
+			# Danger throttle: giảm ga khi obstacle đẩy mạnh
+			if total_repulsion > 5.0:
+				danger_throttle_factor = clamp(1.0 - (total_repulsion / 50.0), 0.1, 1.0)
 			else:
-				raw_direction = current_target_direction
+				danger_throttle_factor = 1.0
 
-		else:
-			# Đã chạm ngưỡng đích
-			is_at_current_waypoint_threshold = true
-			raw_direction = current_target_direction
+			# Đổi gia tốc thành Lực (Torque = Gia tốc * mass) và apply thẳng vào thân tàu
+			var pitch_torque = global_transform.basis.x * applied_accel_pitch * mass
+			var yaw_torque   = Vector3.UP * applied_accel_yaw * mass
+			
+			apply_torque(yaw_torque + pitch_torque)   # Mới: apply tổng torque
+	
+	# Khoảng cách gần target, không dùng steering mà dùng manual
+	else:
+		desired_direction = raw_direction
+		update_character_rotation(delta, ship_heading_vector, desired_direction, distance, min_stopping_distance)
 
-		# =========================================================
-		# STEERING: Fajen (xa) hoặc manual torque (gần)
-		# =========================================================
-		if distance > ship_length * 5.0:
-			# Ở xa: dùng Fajen steering
-			desired_direction = raw_direction
-
-			if current_steering_mode == ShipSteeringMode.FAJEN_WARREN:
-				var fajen_result = compute_fajen_angular_acceleration(
-					ship_heading_vector, raw_direction, fajen_angular_velocity)
-				var raw_fajen_accel: Vector2 = fajen_result["angular_accel"]  # Gia tốc góc Fajen (pitch, yaw)
-				var total_repulsion: float = fajen_result["repulsion_force"]  # Tổng lực đẩy obstacle
-
-				# 1. Clamp fajen accel theo max torque engine: a_max = torque / mass
-				var max_engine_accel = angular_acceleration  # rad/s² tối đa
-				var applied_accel_pitch = clamp(raw_fajen_accel.x, -max_engine_accel, max_engine_accel)
-				var applied_accel_yaw   = clamp(raw_fajen_accel.y, -max_engine_accel, max_engine_accel)
-
-				# 2. Cập nhật fajen momentum (tích hợp gia tốc → vận tốc)
-				fajen_angular_velocity.x += applied_accel_pitch * delta
-				fajen_angular_velocity.y += applied_accel_yaw * delta
-				# Damping fajen momentum về 0 (dùng angular_damp_value để tunable)
-				fajen_angular_velocity = fajen_angular_velocity.lerp(Vector2.ZERO, angular_damp_value * delta)
-				# Clamp tốc độ xoay tối đa
-				if fajen_angular_velocity.length() > max_turn_speed:
-					fajen_angular_velocity = fajen_angular_velocity.normalized() * max_turn_speed
-
-				# 3. Danger throttle: giảm ga khi obstacle đẩy mạnh
-				if total_repulsion > 5.0:
-					danger_throttle_factor = clamp(1.0 - (total_repulsion / 50.0), 0.1, 1.0)
-				else:
-					danger_throttle_factor = 1.0
-
-				# 4. Apply torque xoay tàu (thay global_rotate)
-				# Lý do đổi: global_rotate set transform trực tiếp → conflict với RigidBody3D physics
-				# global_rotate(Vector3.UP, fajen_angular_velocity.y * delta)              # Cũ
-				# var local_right = global_transform.basis.x.normalized()                  # Cũ
-				# global_rotate(local_right, fajen_angular_velocity.x * delta)             # Cũ
-				# global_transform.basis = global_transform.basis.orthonormalized()        # Cũ
-				var yaw_torque   = Vector3.UP * fajen_angular_velocity.y * angular_acceleration * mass  # Torque yaw: quanh trục Y global
-				var pitch_torque = global_transform.basis.x * fajen_angular_velocity.x * angular_acceleration * mass  # Torque pitch: quanh trục X local
-				apply_torque(yaw_torque + pitch_torque)   # Mới: apply tổng torque
-
-		else:
-			# Gần target: manual torque steering
-			desired_direction = raw_direction
-			update_character_rotation(delta, ship_heading_vector, desired_direction, distance, min_stopping_distance)
-
-	# Tính heading alignment: 1.0 = nhìn thẳng vào target, 0.0 = vuông góc, -1.0 = ngược
+	# Tính heading alignment theo desired direction: 1.0 = nhìn thẳng vào target, 0.0 = vuông góc, -1.0 = ngược
 	var heading_alignment = ship_heading_vector.dot(desired_direction)
 
 	# =========================================================
 	# WAYPOINT SWITCHING
 	# =========================================================
 	#var waypoint_switch_distance = distance_threshold / 2.0  # Ngưỡng chuyển waypoint mặc định
-	var waypoint_switch_distance = max(distance_threshold / 2.0, min_stopping_distance * 0.8)
+	var waypoint_switch_distance = distance_threshold / 2.0
 	if ship_movement_waypoints.size() > 0:
 		waypoint_switch_distance = max_linear_speed * 0.5  # Cắt góc sớm hơn khi đang chạy nhanh
-
+	
+	# Nếu vào ngưỡng đổi waypoint
 	if distance < waypoint_switch_distance:
 		if ship_movement_waypoints.size() > 0:
 			# Còn waypoint: chuyển sang waypoint tiếp theo
@@ -353,71 +358,96 @@ func handle_state_move(delta: float) -> void:
 		else:
 			# Đích cuối: phanh nhanh
 			# velocity = velocity.move_toward(Vector3.ZERO, max_brake_force * delta * 0.1)   # Cũ
-			if linear_velocity.length() > 0.01:
-				apply_central_force(-linear_velocity.normalized() * max_brake_force * mass)  # Mới: phanh bằng force
+			if linear_velocity.length() > 0.1:
+				apply_central_force(-linear_velocity.normalized() * max_brake_force)  # Mới: phanh bằng force
+				linear_velocity = linear_velocity.move_toward(Vector3.ZERO, max_brake_force * delta * 0.1)
 
 			# Dừng hẳn khi đã thẳng hướng và gần dừng
-			if linear_velocity.length() < 0.1 and heading_alignment >= 0.999:
+			if linear_velocity.length() < 0.1 and (heading_alignment >= 0.999 or heading_alignment == 0.0):
+				print("you are here deadass")
 				auto_throttle = 0.0
 
 	# =========================================================
-	# THUẬT TOÁN ARRIVE — tính lực đẩy tiến
+	# THUẬT TOÁN ARRIVE —Tính lực đẩy tiến
 	# =========================================================
 	var target_speed: float
-	var deceleration = max_brake_force  # Gia tốc phanh (m/s²), F = mass * deceleration
-	var is_final_waypoint = ship_movement_waypoints.is_empty()  # Flag đích cuối
-
+	## Gia tốc phanh (m/s²), F = mass * deceleration
+	var deceleration = max_brake_force
+	var is_final_waypoint = ship_movement_waypoints.is_empty() 	# Flag check đã là điểm cuối của waypoint
+	
+	# Tính tốc độ cần thiết dựa trên distance và waypoint
 	if distance > min_stopping_distance:
-		# Còn xa: tính target speed + apply thrust
-
+		# Càng gần điểm đến, vận tốc càng chậm nhưng luôn giữ tối thiểu 0.05
 		# Tính target speed theo khoảng cách
 		if not is_final_waypoint:
 			target_speed = min(distance / (braking_distance_factor * 0.5), max_linear_speed)  # Waypoint giữa: giữ max speed
 		else:
 			target_speed = clamp(distance / braking_distance_factor, 0.05, max_linear_speed)  # Đích cuối: giảm dần
 
-		# Tính auto throttle: mũi nhìn thẳng → ga max, mũi lệch → ga giảm
-		auto_throttle = pow(clamp(heading_alignment, 0.0, 1.0), 3)  # Lũy thừa 3 để nhạy hơn khi lệch
-		auto_throttle *= danger_throttle_factor  # Giảm ga nếu có obstacle nguy hiểm
-
+		# Tính ga trên góc xoay giữa mũi tàu và điểm tới (Auto throttle)
+		# Nếu mũi nhìn thẳng (alignment = 1) -> throttle = 1 (Chạy 100% ga)
+		# Nếu mũi quay ngang (alignment <= 0) -> throttle = 0 (Nhả ga về 0)
+		auto_throttle = clamp(heading_alignment, 0.0, 1.0)
+		auto_throttle = pow(auto_throttle, 3)   # Lũy thừa 3 để nhạy hơn khi lệch
+		
+		# Ép ga nhỏ lại nếu Radar báo hiệu nguy hiểm phía trước
+		auto_throttle *= danger_throttle_factor 
+		
+		# Tính vận tốc áp dụng
+		# Chỉ bắt đầu tăng tốc khi hướng mũi ship đã ổn so với điểm tới (cách điểm hàm còn xa)
 		if heading_alignment > 0.0:
 			# Hướng mũi hợp lệ: tính và apply thrust force
+			## v(desired) = direction(ship heading vector3) * current speed * hệ số ga
 			var desired_velocity = ship_heading_vector * (target_speed * auto_throttle)  # Vận tốc mong muốn
 
 			# Lý do đổi: không dùng velocity trực tiếp, dùng linear_velocity
 			# var steering_force = desired_velocity - velocity                              # Cũ
+			## v(stearing) = v(desired) - v(current)
 			var steering_force = desired_velocity - linear_velocity  # Mới: delta velocity
 
-			# Clamp steering force theo max_thrust_force
+			# Giới hạn lực đẩy (thrust) tối đa cho lực bẻ lại không thể hơn max lực đẩy
 			if steering_force.length() > max_thrust_force:
 				steering_force = steering_force.normalized() * max_thrust_force
 
 			# Lý do đổi: không set velocity trực tiếp, dùng apply_central_force
 			# velocity += (steering_force / mass) * delta   # Cũ: set velocity thủ công
-			# F = mass * a = mass * steering_force (steering_force đơn vị m/s, nhân mass → Newton)
+			## F = mass * a = mass * steering_force (steering_force đơn vị m/s, nhân mass → Newton)
 			apply_central_force(steering_force * mass)  # Mới: Newton thật
 
 		else:
 			# Hướng ngược: phanh lại
 			# velocity = velocity.move_toward(Vector3.ZERO, deceleration)   # Cũ
-			if linear_velocity.length() > 0.01:
-				apply_central_force(-linear_velocity.normalized() * deceleration * mass)  # Mới
+			apply_central_force(-linear_velocity.normalized() * deceleration)  # Mới
 
 	else:
 		# Trong vùng stopping distance: phanh
 		# velocity = velocity.move_toward(Vector3.ZERO, deceleration)           # Cũ (final)
 		# velocity = velocity.move_toward(Vector3.ZERO, deceleration * 0.5)     # Cũ (mid)
-		if linear_velocity.length() > 0.01:
-			var brake_multiplier = 1.0 if is_final_waypoint else 0.5  # Final: phanh full, mid: phanh nhẹ
-			apply_central_force(-linear_velocity.normalized() * deceleration * mass * brake_multiplier)  # Mới
+		# Lấy chính max_brake_force làm lực phanh để hãm velocity lại
+		# Trong vùng stopping distance: phanh
+		# 1. Kiểm tra vận tốc hiện tại
+		if linear_velocity.length() > 0.1:
+			# 2. Phanh dần nếu vận tốc còn lớn
+			if is_final_waypoint:
+				apply_central_force(-linear_velocity.normalized() * deceleration * mass)  # Mới (Nhân mass)
+			else:
+				apply_central_force(-linear_velocity.normalized() * deceleration * 0.5 * mass)  # Mới (Nhân mass)
+		else:
+			# 3. Ép vận tốc về 0 nếu quá nhỏ để tránh giật
+			linear_velocity = Vector3.ZERO
 
 	# =========================================================
 	# LATERAL DAMPENING — triệt tiêu vận tốc ngang, chống bay vòng tròn
 	# =========================================================
 	# Tách vận tốc thành 2 thành phần: tiến và ngang
-	var forward_speed    = linear_velocity.dot(ship_heading_vector)   # Tốc độ tiến (float)
-	var forward_velocity = ship_heading_vector * forward_speed         # Vector vận tốc tiến
-	var lateral_velocity = linear_velocity - forward_velocity          # Vector vận tốc ngang (cần triệt tiêu)
+	## Tính độ lớn vận tốc đúng: speed(forward) = dot(v(current), direction(ship heading vector3))
+	var forward_speed = linear_velocity.dot(ship_heading_vector)	# 1 số float, độ lớn vector
+	## Tính vector vận tốc đúng: v(forward) = speed(forward) * direction(ship heading vector3)
+	var forward_velocity = ship_heading_vector * forward_speed		# Vector có hướng + độ lớn, để biết velocity theo mũi tàu đang lớn bao nhiêu
+	
+	# Tính vận tốc ngang (vận tốc còn thừa ở hướng cũ so với hướng mới)
+	## v(curent) = v(lateral) + v(forward) -> v(lateral) = v(current) - v(forward)
+	var lateral_velocity = linear_velocity - forward_velocity
 
 	# Tăng friction khi gần đích để không bị trôi
 	var effective_friction = lateral_friction
@@ -427,17 +457,28 @@ func handle_state_move(delta: float) -> void:
 	# Lý do đổi: không lerp velocity trực tiếp, dùng apply_central_force
 	# lateral_velocity = lateral_velocity.lerp(Vector3.ZERO, effective_friction * delta)   # Cũ
 	# velocity = forward_velocity + lateral_velocity                                        # Cũ
-	# F_lateral = -lateral_velocity * friction * mass (Newton = kg * m/s²)
-	apply_central_force(-lateral_velocity * effective_friction * mass)  # Mới: lực triệt tiêu ngang
+	## F_lateral = -lateral_velocity * friction (Newton = kg * m/s²)
+	# Dead zone: không apply khi lateral_velocity quá nhỏ
+	# Tránh oscillation do floating point và heading rotation liên tục
+	# 1. Kiểm tra độ lớn vận tốc ngang
+	if lateral_velocity.length() > 0.1: # Giảm ngưỡng deadzone xuống để mượt hơn
+		# 2. Áp dụng lực triệt tiêu
+		apply_central_force(-lateral_velocity * effective_friction * mass)
 
 	# Clamp tốc độ tối đa (RigidBody3D không tự clamp như CharacterBody3D)
 	if linear_velocity.length() > max_linear_speed:
-		linear_velocity = linear_velocity.normalized() * max_linear_speed  # Hard clamp
+		linear_velocity = linear_velocity.normalized() * max_linear_speed
 
 	# Debug visuals
 	draw_debug_vectors(desired_direction, forward_velocity, lateral_velocity)
 	var predicted_path = calculate_predicted_path()
 	draw_trajectory_line(predicted_path)
+	
+	rich_text_label_2.text = \
+		"\nMin stopping distance: " + str(min_stopping_distance) + \
+		"\nDistance: " + str(distance) + \
+		"\nHeading alignment: " + str(heading_alignment) + \
+		"\nlateral_velocity: " + str(lateral_velocity)
 
 	# Lý do comment out: RigidBody3D tự xử lý collision, không cần gọi thủ công
 	# move_and_slide()   # Cũ: chỉ dùng cho CharacterBody3D
@@ -473,11 +514,8 @@ func _on_fajen_body_exited(body: Node3D) -> void:
 # ship_heading_vector : Hướng mũi tàu (Vector3 normalized)
 # target_direction    : Hướng mục tiêu cần bay đến (Vector3 normalized)
 # current_angular_velocity : Momentum xoay hiện tại của Fajen (Vector2: x=pitch, y=yaw)
-func compute_fajen_angular_acceleration(
-		ship_heading_vector: Vector3,
-		target_direction: Vector3,
-		current_angular_velocity: Vector2) -> Dictionary:
-
+func compute_fajen_angular_acceleration(ship_heading_vector: Vector3, target_direction: Vector3, current_angular_velocity: Vector2) -> Dictionary:
+	
 	var space_state = get_world_3d().direct_space_state  # Physics space để raycast
 
 	# Tính góc Yaw và Pitch của tàu (trong world space theo trục Z forward)
@@ -640,101 +678,210 @@ func change_state(new_state: PlayerState) -> void:
 
 # ----------------------- SUPPORT FUNCTION --------------------------
 
-# Hàm xoay tàu bằng torque khi ở gần target (thay thế set transform trực tiếp)
-## delta                : delta time
+# Hàm xoay tàu bằng PID Controller khi ở gần target để chống rung lắc (Jitter)
+## delta                : thời gian của 1 frame
 ## heading_vector       : hướng mũi tàu hiện tại (-Z local)
 ## desired_direction    : hướng cần xoay đến
 ## distant_to_target    : khoảng cách đến target
 ## min_stopping_distance: quãng đường phanh tối thiểu
-func update_character_rotation(
-		delta: float,
-		heading_vector: Vector3,
-		desired_direction: Vector3,
-		distant_to_target: float,
-		min_stopping_distance: float) -> void:
-
-	# 1. Check đã thẳng hướng chưa
-	if heading_vector.is_equal_approx(desired_direction): return
-
-	# 2. Tránh Gimbal Lock khi nhìn thẳng lên/xuống
-	var safe_up = Vector3.UP
-	if abs(desired_direction.y) > 0.99:
-		safe_up = Vector3.RIGHT  # Mượn trục X làm UP tạm thời
-
-	# 3. Level-out basis khi gần đích cuối (blend về nằm ngang)
-	var target_basis = Basis.looking_at(desired_direction, safe_up)
-	if ship_movement_waypoints.is_empty():
-		if distant_to_target <= min_stopping_distance or distant_to_target < max_linear_speed:
-			var flat_desired = Vector3(desired_direction.x, 0.0, desired_direction.z)
-			if flat_desired.length_squared() > 0.001:
-				var leveled_basis  = Basis.looking_at(flat_desired.normalized(), Vector3.UP)
-				var blend_weight   = clamp(1.0 - (distant_to_target / max_linear_speed), 0.0, 1.0)
-				var blend_quat     = Quaternion(target_basis).slerp(Quaternion(leveled_basis), blend_weight)
-				target_basis       = Basis(blend_quat)
-
-	# 4. Tính trục và góc lệch để xoay
+func update_character_rotation(delta: float, heading_vector: Vector3, desired_direction: Vector3, distant_to_target: float, min_stopping_distance: float) -> void:
+	# 2. Tính toán trục xoay và góc lệch (Error)
 	var cross = heading_vector.cross(desired_direction)  # Trục vuông góc giữa heading và desired
-	if cross.length_squared() < 0.0001: return           # Đã thẳng hàng
-	var rotation_axis = cross.normalized()               # Trục xoay chuẩn hóa
-	var angle_diff    = heading_vector.angle_to(desired_direction)  # Góc lệch (radian)
-
-	# 5. Tính desired turn speed theo góc lệch (arrive behavior)
-	var desired_turn_speed = clamp(angle_diff * turn_sensitivity, -max_turn_speed, max_turn_speed)
-
-	# 6. Lấy current turn speed từ RigidBody3D angular_velocity theo đúng trục xoay
-	# Lý do đổi: không dùng float angular_velocity thủ công
-	# var current_turn_speed = angular_velocity                          # Cũ: float thủ công
-	var current_turn_speed = angular_velocity.dot(rotation_axis)        # Mới: lấy từ engine Vector3
-
-	# 7. Tính steering torque
-	var speed_diff = desired_turn_speed - current_turn_speed
-
-	# 8. Chọn torque power: tăng tốc hay phanh xoay
-	var is_same_direction = sign(desired_turn_speed) == sign(current_turn_speed)
-	var is_speeding_up    = abs(desired_turn_speed) > abs(current_turn_speed)
-	var torque_power: float
-	if is_same_direction and is_speeding_up:
-		torque_power = angular_acceleration  # Đang tăng tốc xoay
+	var rotation_axis: Vector3
+	
+	# Sửa lỗi "bị đơ": Khi hướng hiện tại và đích đối diện 180 độ, cross vector = (0,0,0) tàu sẽ không biết quay trái hay phải.
+	if cross.length_squared() < 0.001: 
+		if heading_vector.dot(desired_direction) < -0.9:
+			# Đang ngược hướng 180 độ -> Ép tàu quay theo trục Y (Yaw)
+			rotation_axis = Vector3.UP
+		else:
+			# Đã thẳng hàng hoàn toàn (0 độ) -> Kết thúc
+			rot_error_integral = 0.0 
+			return                   
 	else:
-		torque_power = angular_braking       # Đang phanh hoặc đảo chiều xoay
+		rotation_axis = cross.normalized()               
 
-	# 9. Apply torque (thay set global_transform.basis trực tiếp)
-	# Lý do đổi: set basis trực tiếp conflict với RigidBody3D physics engine
-	# angular_velocity += steering_torque * applied_torque_power * delta   # Cũ: thủ công
-	# global_transform.basis = Basis(new_quat)                              # Cũ: set trực tiếp
-	apply_torque(rotation_axis * speed_diff * torque_power * mass)          # Mới: T = mass * torque_power * speed_diff
+	var angle_error = heading_vector.angle_to(desired_direction)  # Góc lệch (Radian)
 
-	# 10. Level-out torque khi gần đích cuối (kéo về nằm ngang)
-	if ship_movement_waypoints.is_empty():
-		if distant_to_target <= min_stopping_distance or distant_to_target < max_linear_speed:
-			var flat_desired = Vector3(desired_direction.x, 0.0, desired_direction.z)
-			if flat_desired.length_squared() > 0.001:
-				var level_cross = heading_vector.cross(flat_desired.normalized())
-				if level_cross.length_squared() > 0.0001:
-					var blend = clamp(1.0 - (distant_to_target / max_linear_speed), 0.0, 1.0)
-					apply_torque(level_cross.normalized() * blend * angular_acceleration * mass * 0.5)
+	# 3. Tính toán 3 thành phần của PID (Đóng vai trò là Gia Tốc Góc - Angular Acceleration)
+	# 3.1. Proportional (P) - Gia tốc kéo tỉ lệ với góc lệch
+	var p_term = pid_rot_p * angle_error
+	
+	# 3.2. Integral (I) - Tích lũy góc lệch theo thời gian
+	rot_error_integral += angle_error * delta
+	var i_term = pid_rot_i * rot_error_integral
+	
+	# 3.3. Derivative (D) - Gia tốc cản tỉ lệ với vận tốc góc hiện tại (Chống overshoot)
+	var current_angular_vel = angular_velocity.dot(rotation_axis) 
+	var d_term = pid_rot_d * current_angular_vel 
 
-# Hàm cân bằng tàu về nằm ngang khi IDLE bằng torque
-## delta: delta time
+	# 4. Tính tổng gia tốc góc cần thiết từ thuật toán PID
+	var pid_accel = p_term + i_term - d_term
+
+	# 5. Giới hạn gia tốc không vượt quá sức mạnh động cơ (angular_acceleration)
+	pid_accel = clamp(pid_accel, -angular_acceleration, angular_acceleration)
+
+	# 6. Đổi gia tốc thành Lực Torque (Torque = Gia tốc * Khối lượng)
+	# Việc nhân mass ở bước cuối giúp thuật toán PID luôn mạnh mẽ dù tàu nặng hay nhẹ
+	var pid_torque = pid_accel * mass
+
+	# 7. Apply lực Torque vào RigidBody3D
+	if abs(pid_torque) > 0.05:
+		apply_torque(rotation_axis * pid_torque)
+	else:
+		# Ép góc về tĩnh nếu lực đã cực nhỏ để tránh vi rung
+		angular_velocity = angular_velocity.lerp(Vector3.ZERO, 10.0 * delta)
+
+	# 8. Level-out torque khi gần đích cuối (Kéo tàu về nằm ngang)
+	if ship_movement_waypoints.is_empty() and distant_to_target <= min_stopping_distance:
+		var flat_desired = Vector3(desired_direction.x, 0.0, desired_direction.z)
+		if flat_desired.length_squared() > 0.001:
+			var level_cross = heading_vector.cross(flat_desired.normalized())
+			if level_cross.length_squared() > 0.0001:
+				var blend = clamp(1.0 - (distant_to_target / max_linear_speed), 0.0, 1.0)
+				apply_torque(level_cross.normalized() * blend * (angular_acceleration * mass) * 0.5)
+
+## Hàm xoay tàu bằng torque khi ở gần target (thay thế set transform trực tiếp)
+### delta                : delta time
+### heading_vector       : hướng mũi tàu hiện tại (-Z local)
+### desired_direction    : hướng cần xoay đến
+### distant_to_target    : khoảng cách đến target
+### min_stopping_distance: quãng đường phanh tối thiểu
+#func update_character_rotation(delta: float, heading_vector: Vector3, desired_direction: Vector3, distant_to_target: float, min_stopping_distance: float) -> void:
+	## 1. Check đã thẳng hướng chưa
+	##if heading_vector.is_equal_approx(desired_direction): return
+#
+	## 2. Tránh Gimbal Lock khi nhìn thẳng lên/xuống
+	#var safe_up = Vector3.UP
+	#if abs(desired_direction.y) > 0.99:
+		#safe_up = Vector3.RIGHT  # Mượn trục X làm UP tạm thời
+#
+	## 3. Level-out basis khi gần đích cuối (blend về nằm ngang)
+	#var target_basis = Basis.looking_at(desired_direction, safe_up)
+	#
+	## Cân bằng ship khi gần tới đích
+	## Nếu đây là waypoint cuối cùng và tàu đang đi chậm lại
+	#if ship_movement_waypoints.is_empty():
+		## Nếu đã vào vùng phanh
+		#if distant_to_target <= min_stopping_distance or distant_to_target < max_linear_speed:
+			#var flat_desired_direction = Vector3(desired_direction.x, 0.0, desired_direction.z)
+			#if flat_desired_direction.length_squared() > 0.001:
+				## Basis 2: Nằm ngang hoàn toàn
+				#var leveled_basis = Basis.looking_at(flat_desired_direction.normalized(), Vector3.UP)
+				#
+				## Tính tỷ lệ mix: Càng gần đích, tỷ lệ leveled càng cao
+				#var blend_weight = clamp(1.0 - (distant_to_target / max_linear_speed), 0.0, 1.0)
+				#
+				## Trộn 2 Basis lại với nhau!
+				#var blend_quaternion = Quaternion(target_basis).slerp(Quaternion(leveled_basis), blend_weight)
+				#target_basis = Basis(blend_quaternion)
+#
+	## 4. Tính trục và góc lệch để xoay
+	#var cross = heading_vector.cross(desired_direction)  # Trục vuông góc giữa heading và desired
+	#if cross.length_squared() < 0.0001: return           # Đã thẳng hàng
+	#var rotation_axis = cross.normalized()               # Trục xoay chuẩn hóa
+	#var angle_diff    = heading_vector.angle_to(desired_direction)  # Góc lệch (radian)
+#
+	## 5. Tính desired turn speed theo góc lệch (arrive behavior)
+	## Càng gần đích, xoay càng mượt để tránh rung lắc
+	#var distance_factor = clamp(distant_to_target / (distance_threshold * 2.0), 0.1, 1.0)
+	#var turn_dampening = 1.0
+	#if ship_movement_waypoints.is_empty() and distant_to_target < distance_threshold:
+		#turn_dampening = distance_factor
+		#
+	#var desired_turn_speed = clamp(angle_diff * turn_sensitivity * turn_dampening, -max_turn_speed, max_turn_speed)
+#
+	## 6. Lấy current turn speed từ RigidBody3D angular_velocity theo đúng trục xoay
+	#var current_turn_speed = angular_velocity.dot(rotation_axis)        # Mới: lấy từ engine Vector3
+#
+	## 7. Tính steering torque
+	#var speed_diff = desired_turn_speed - current_turn_speed
+#
+	## 8. Chọn torque power: tăng tốc hay phanh xoay
+	#var is_same_direction = sign(desired_turn_speed) == sign(current_turn_speed)
+	#var is_speeding_up    = abs(desired_turn_speed) > abs(current_turn_speed)
+	#var torque_power: float
+	#if is_same_direction and is_speeding_up:
+		#torque_power = angular_acceleration  # Đang tăng tốc xoay
+	#else:
+		#torque_power = angular_braking       # Đang phanh hoặc đảo chiều xoay
+#
+	## 9. Apply torque (thay set global_transform.basis trực tiếp)
+	## 1. Kiểm tra speed_diff có đủ lớn không để tránh rung lắc liti
+	#if abs(speed_diff) > 0.01:
+		## 2. Apply torque có nhân mass (Torque = I * alpha, mass thường tỉ lệ với Inertia)
+		#apply_torque(rotation_axis * speed_diff * torque_power * mass)          # Nhân mass để lực đủ mạnh và ổn định
+	#else:
+		## 3. Ép angular velocity về 0 nếu góc đã chuẩn để chống jitter
+		#angular_velocity = angular_velocity.lerp(Vector3.ZERO, 5.0 * delta)
+#
+	## 10. Level-out torque khi gần đích cuối (kéo về nằm ngang)
+	#if ship_movement_waypoints.is_empty():
+		#if distant_to_target <= min_stopping_distance or distant_to_target < max_linear_speed:
+			#var flat_desired = Vector3(desired_direction.x, 0.0, desired_direction.z)
+			#if flat_desired.length_squared() > 0.001:
+				#var level_cross = heading_vector.cross(flat_desired.normalized())
+				#if level_cross.length_squared() > 0.0001:
+					#var blend = clamp(1.0 - (distant_to_target / max_linear_speed), 0.0, 1.0)
+					#apply_torque(level_cross.normalized() * blend * angular_acceleration * 0.5)
+
+## Hàm cân bằng tàu về nằm ngang khi IDLE bằng torque
+### delta: delta time
+#func auto_stable_ship_indie_state(delta: float) -> void:
+	#var current_forward = -global_transform.basis.z                          # Hướng mũi tàu hiện tại
+	#var flat_forward    = Vector3(current_forward.x, 0.0, current_forward.z) # Chiếu xuống mặt phẳng XZ
+#
+	#if flat_forward.length_squared() > 0.001:
+		#flat_forward = flat_forward.normalized()
+#
+		## Lý do đổi: set global_transform.basis trực tiếp conflict với RigidBody3D physics
+		## var target_basis = Basis.looking_at(flat_forward, Vector3.UP)                       # Cũ
+		## var current_quat = Quaternion(global_transform.basis.orthonormalized())             # Cũ
+		## var target_quat  = Quaternion(target_basis)                                         # Cũ
+		## global_transform.basis = Basis(current_quat.slerp(target_quat, 2.0 * delta))       # Cũ: set trực tiếp
+#
+		## 1. Tính pitch error: component Y của forward = độ nghiêng so với mặt phẳng ngang
+		#var pitch_error = current_forward.y  # > 0: đang ngóc đầu lên, < 0: cúi đầu xuống
+		## 2. Apply torque kéo pitch về 0 quanh trục X local
+		#apply_torque(-global_transform.basis.x * pitch_error * angular_acceleration * stabilization_speed)
+		## 3. Damping angular velocity để dừng lắc lư khi IDLE
+		#apply_torque(-angular_velocity * angular_damp_value)
+
+# Hàm cân bằng tàu về nằm ngang khi IDLE bằng Mini-PID
 func auto_stable_ship_indie_state(delta: float) -> void:
-	var current_forward = -global_transform.basis.z                          # Hướng mũi tàu hiện tại
-	var flat_forward    = Vector3(current_forward.x, 0.0, current_forward.z) # Chiếu xuống mặt phẳng XZ
+	var current_forward = -global_transform.basis.z
+	
+	# ==================================================
+	# 1. CÂN BẰNG PITCH (NGÓC/CÚI ĐẦU)
+	# ==================================================
+	var pitch_error = asin(clamp(current_forward.y, -1.0, 1.0)) # >0 là đang ngóc lên, <0 là chúi xuống
+	var pitch_axis = -global_transform.basis.x # Trục xoay ngóc/cúi
+	
+	# P - Lực kéo về 0 độ
+	var p_term = pitch_error * (angular_acceleration * stabilization_speed)
+	# D - Lực hãm đà chống lắc qua lại
+	var current_pitch_vel = angular_velocity.dot(pitch_axis)
+	var d_term = current_pitch_vel * (angular_damp_value * 5.0) # Nhân 5 để phanh gắt hơn
+	
+	var pitch_torque = (p_term - d_term) * mass
+	
+	# Apply torque nếu còn lệch, nếu đã rất phẳng thì dập tắt luôn vận tốc pitch
+	if abs(pitch_error) > 0.005 or abs(current_pitch_vel) > 0.01:
+		apply_torque(pitch_axis * pitch_torque)
+	else:
+		angular_velocity -= angular_velocity.project(pitch_axis) # Trừ bỏ phần xoay pitch
 
-	if flat_forward.length_squared() > 0.001:
-		flat_forward = flat_forward.normalized()
-
-		# Lý do đổi: set global_transform.basis trực tiếp conflict với RigidBody3D physics
-		# var target_basis = Basis.looking_at(flat_forward, Vector3.UP)                       # Cũ
-		# var current_quat = Quaternion(global_transform.basis.orthonormalized())             # Cũ
-		# var target_quat  = Quaternion(target_basis)                                         # Cũ
-		# global_transform.basis = Basis(current_quat.slerp(target_quat, 2.0 * delta))       # Cũ: set trực tiếp
-
-		# 1. Tính pitch error: component Y của forward = độ nghiêng so với mặt phẳng ngang
-		var pitch_error = current_forward.y  # > 0: đang ngóc đầu lên, < 0: cúi đầu xuống
-		# 2. Apply torque kéo pitch về 0 quanh trục X local
-		apply_torque(-global_transform.basis.x * pitch_error * angular_acceleration * mass * stabilization_speed)
-		# 3. Damping angular velocity để dừng lắc lư khi IDLE
-		apply_torque(-angular_velocity * angular_damp_value * mass)
+	# ==================================================
+	# 2. HÃM ĐÀ YAW (XOAY TRÁI/PHẢI KHI ĐANG ĐỨNG IM)
+	# ==================================================
+	var yaw_axis = Vector3.UP
+	var current_yaw_vel = angular_velocity.dot(yaw_axis)
+	
+	if abs(current_yaw_vel) > 0.01:
+		# Áp dụng lực phanh hãm xoay ngang
+		apply_torque(-yaw_axis * current_yaw_vel * (angular_damp_value * mass * 5.0))
+	else:
+		angular_velocity -= angular_velocity.project(yaw_axis) # Trừ bỏ phần xoay ngang
 
 # Hàm tự cân bằng roll về 0 bằng torque (chạy mọi frame)
 func apply_roll_correction() -> void:
@@ -745,21 +892,21 @@ func apply_roll_correction() -> void:
 	# 3. roll_axis: trục Z local (trục forward = trục roll của tàu)
 	var roll_axis  = global_transform.basis.z
 	# 4. Chiếu roll_error lên roll_axis để lấy thành phần roll thuần túy, apply torque kéo về 0
-	apply_torque(roll_axis * roll_error.dot(roll_axis) * roll_correction_torque * mass)
+	apply_torque(roll_axis * roll_error.dot(roll_axis) * roll_correction_torque)
 	# 5. Damping angular velocity theo trục Z để tắt lắc lư roll
-	apply_torque(-angular_velocity.project(global_transform.basis.z) * angular_damp_value * mass)
+	apply_torque(-angular_velocity.project(global_transform.basis.z) * angular_damp_value)
 
 # Hàm giới hạn góc pitch tối đa (chạy mọi frame)
 func apply_pitch_clamp() -> void:
 	# 1. Tính pitch hiện tại từ component Y của hướng forward (-Z)
-	var pitch        = asin(clamp(-global_transform.basis.z.y, -1.0, 1.0))  # Radian
+	var pitch = asin(clamp(-global_transform.basis.z.y, -1.0, 1.0))  # Radian
 	# 2. Đổi max_pitch_angle từ độ sang radian
 	var max_pitch_rad = deg_to_rad(max_pitch_angle)
 	# 3. Nếu vượt quá giới hạn thì apply torque kéo về
 	if abs(pitch) > max_pitch_rad:
 		var pitch_error = pitch - sign(pitch) * max_pitch_rad  # Độ lệch so với giới hạn
 		# Apply torque ngược chiều quanh trục X local
-		apply_torque(-global_transform.basis.x * pitch_error * angular_acceleration * mass)
+		apply_torque(-global_transform.basis.x * pitch_error * angular_acceleration)
 
 # -----------------------  DEBUG VISUAL ------------------------------
 
