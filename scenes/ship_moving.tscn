@@ -66,5 +66,6 @@ mesh = SubResource("BoxMesh_aqk2v")
 [node name="Ship_Player" parent="." instance=ExtResource("1_8br57")]
 
 [node name="Camera_Free" parent="." instance=ExtResource("2_vtupg")]
+zoom_step = 1.0
 min_vertical_angle = -1.5707963267948966
 max_vertical_angle = 1.5707963267948966

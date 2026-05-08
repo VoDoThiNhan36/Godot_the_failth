@@ -43,6 +43,7 @@ var rotation_prev_angle  := 0.0             	# Lưu góc lệch frame trước �
 var target_position    := Vector3.ZERO	# Vị trí đích đến được đặt khi click chuột
 var distance_traveled  := 0.0			# Quãng đường đã di chuyển
 var last_position      := Vector3.ZERO	# Vị trí cuối cùng của tàu, dùng để tính quãng đường đã đi
+var ship_length: float                               # Độ dài tàu (tính từ AABB mesh)
 
 # ============================== BIẾN MOVEMENT ======================================
 
@@ -52,14 +53,18 @@ var current_target_height_offset := 0.0              # Offset độ cao từ scr
 var ship_movement_waypoints: Array[Movement_Waypoint] = []  # Danh sách waypoint
 var current_waypoint: Movement_Waypoint = null       # Waypoint đang bay tới
 var is_at_current_waypoint_threshold := false        # Flag đã vào vùng ngưỡng đích
-var ship_length: float                               # Độ dài tàu (tính từ AABB mesh)
+
+# For shift direction move
+var shift_target_position := Vector3.ZERO
+var shift_target_distance := 10.0
 
 # ============================== TRẠNG THÁI ======================================
 
 enum PlayerState { IDLE, MOVE }
 enum ShipSteeringMode { CONTEXT, FAJEN_WARREN }
-var current_state: PlayerState = PlayerState.IDLE
-
+enum ShipMovingMode {SEQUENCE, SHIFT_DIRECTION}
+var current_state: PlayerState
+var current_moving_mode: ShipMovingMode
 # ============================== DEBUG ======================================
 
 var debug_vector_mesh := MeshInstance3D.new()	# Mesh debug cho các vector di chuyển
@@ -71,6 +76,10 @@ var _dbg_lateral_vel   := Vector3.ZERO
 var _dbg_linear_vel    := Vector3.ZERO
 var _dbg_distance      := 0.0
 var _dbg_braking_dist  := 0.0
+
+# Arrival facing preview (set từ scene controller khi đang drag)
+var arrival_facing_preview_direction    := Vector3.ZERO
+var arrival_facing_preview_active := false
 
 @onready var rich_text_label: RichTextLabel = $"../RichTextLabel"
 @onready var rich_text_label_2: RichTextLabel = $"../RichTextLabel2"
@@ -86,6 +95,11 @@ func _ready() -> void:
 	var ship = self.get_child(0) as Node3D          # Node3D chứa mesh
 	var mesh = ship.get_child(0) as MeshInstance3D       # MeshInstance3D để lấy AABB
 	ship_length = mesh.get_aabb().size.x                 # Ship nằm hướng X, đã xoay -90 sang -Z
+
+	# Set state ban đầu
+	current_state = PlayerState.IDLE
+	current_moving_mode = ShipMovingMode.SEQUENCE
+	current_target_direction = -global_transform.basis.z
 	
 	# Internal setup
 	gravity_scale = 0.0
@@ -107,65 +121,76 @@ func _ready() -> void:
 	debug_vector_mesh.material_override = mat
 	add_child(debug_vector_mesh)
 
-# ============================== INPUT ======================================
+# ============================== PUBLIC INPUT API ======================================
+# Không có _unhandled_input ở đây — ship KHÔNG tự xử lý input.
+# Scene controller (ship_moving_scene.gd) đọc input rồi gọi các hàm API bên dưới.
+# Lợi ích: ship không biết phím nào được nhấn, dễ remap, dễ test, không conflict.
 
-func _unhandled_input(event: InputEvent) -> void:
-	# Chỉ xử lý scroll wheel
-	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			# Chỉ chỉnh độ cao khi giữ phím sequence_move
-			if Input.is_action_pressed("sequence_move"):
-				var offset = 1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1.0  # Offset Y mỗi lần scroll
-				# Giới hạn trần/đáy bay
-				#current_target_height_offset = clamp(current_target_height_offset + offset, -max_pitch_angle, max_pitch_angle)
-				# Trường hợp 1: có waypoint trong hàng đợi → chỉnh waypoint cuối
-				if not ship_movement_waypoints.is_empty():
-					var last_waypoint = ship_movement_waypoints.back()
-					var prev_position: Vector3
+## Chỉnh độ cao waypoint cuối (hoặc target hiện tại) theo offset scroll.
+## Gọi từ scene controller khi nhận scroll event + đúng context.
+## offset: +1.0 = lên, -1.0 = xuống
+func adjust_waypoint_target_height(offset: float) -> void:
+	# Trường hợp 1: có waypoint trong hàng đợi → chỉnh waypoint cuối
+	if not ship_movement_waypoints.is_empty():
+		var last_waypoint = ship_movement_waypoints.back()
+		var prev_position: Vector3
 
-					if ship_movement_waypoints.size() > 1:
-						prev_position = ship_movement_waypoints[ship_movement_waypoints.size() - 2].position
-					else:
-						prev_position = current_target_position if current_state == PlayerState.MOVE else global_position
+		if ship_movement_waypoints.size() > 1:
+			prev_position = ship_movement_waypoints[ship_movement_waypoints.size() - 2].position
+		else:
+			prev_position = current_target_position if current_state == PlayerState.MOVE else global_position
 
-					var dist_xz = Vector2(last_waypoint.position.x, last_waypoint.position.z).distance_to(
-						Vector2(prev_position.x, prev_position.z))  # Khoảng cách mặt phẳng XZ
+		var dist_xz = Vector2(last_waypoint.position.x, last_waypoint.position.z).distance_to(
+			Vector2(prev_position.x, prev_position.z))
 
-					# Giới hạn độ cao theo góc 45 độ (tam giác vuông cân)
-					var min_y = prev_position.y - dist_xz * tan(deg_to_rad(max_pitch_angle))
-					var max_y = prev_position.y + dist_xz * tan(deg_to_rad(max_pitch_angle))
-					last_waypoint.position.y = clamp(last_waypoint.position.y + offset, min_y, max_y)
-					if is_instance_valid(last_waypoint.point_marker):
-						last_waypoint.point_marker.global_position.y = last_waypoint.position.y
-						
-					current_target_height_offset = prev_position.y + (last_waypoint.position.y - prev_position.y)
+		var min_y = prev_position.y - dist_xz * tan(deg_to_rad(max_pitch_angle))
+		var max_y = prev_position.y + dist_xz * tan(deg_to_rad(max_pitch_angle))
+		last_waypoint.position.y = clamp(last_waypoint.position.y + offset, min_y, max_y)
+		if is_instance_valid(last_waypoint.point_marker):
+			last_waypoint.point_marker.global_position.y = last_waypoint.position.y
 
-				# Trường hợp 2: đang MOVE không có waypoint → chỉnh target hiện tại
-				elif current_state == PlayerState.MOVE:
-					var dist_xz = Vector2(current_target_position.x, current_target_position.z).distance_to(
-						Vector2(global_position.x, global_position.z))
-					var min_y = global_position.y - dist_xz * tan(deg_to_rad(max_pitch_angle))
-					var max_y = global_position.y + dist_xz * tan(deg_to_rad(max_pitch_angle))
-					current_target_position.y = clamp(current_target_position.y + offset, min_y, max_y)
-					if current_waypoint and is_instance_valid(current_waypoint.point_marker):
-						current_waypoint.position.y = current_target_position.y
-						current_waypoint.point_marker.global_position.y = current_target_position.y
-						
-					current_target_height_offset = current_target_position.y - global_position.y
-			
-			if Input.is_action_pressed("direction_shift_move"):
-				var offset = 1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1.0  # Offset Y mỗi lần scroll
-				# Clear all waypoint
-				clear_all_waypoints()
+		current_target_height_offset = last_waypoint.position.y - prev_position.y
+
+	# Trường hợp 2: đang MOVE không có waypoint → chỉnh target hiện tại
+	elif current_state == PlayerState.MOVE:
+		var dist_xz = Vector2(current_target_position.x, current_target_position.z).distance_to(
+			Vector2(global_position.x, global_position.z))
+		var min_y = global_position.y - dist_xz * tan(deg_to_rad(max_pitch_angle))
+		var max_y = global_position.y + dist_xz * tan(deg_to_rad(max_pitch_angle))
+		current_target_position.y = clamp(current_target_position.y + offset, min_y, max_y)
+		if current_waypoint and is_instance_valid(current_waypoint.point_marker):
+			current_waypoint.position.y = current_target_position.y
+			current_waypoint.point_marker.global_position.y = current_target_position.y
+
+		current_target_height_offset = current_target_position.y - global_position.y
 				
-				
-# ============================== PROCESS ======================================
+func adjust_shift_target_height(offset: float) -> void:
+	current_target_height_offset += offset
+	current_target_height_offset = clamp(current_target_height_offset, -30.0, 30.0) # Giới hạn offset để tránh lỗi khi scroll quá nhiều
+
+## Cập nhật preview mũi tên vàng tại waypoint cuối (gọi mỗi frame khi đang drag)
+func set_arrival_facing_preview(direction: Vector3, active: bool) -> void:
+	arrival_facing_preview_direction = direction
+	arrival_facing_preview_active = active
+
+## Ghi arrival_facing vào waypoint cuối (gọi khi thả chuột sau drag)
+func confirm_last_waypoint_arrival_facing() -> void:
+	if not ship_movement_waypoints.is_empty():
+		ship_movement_waypoints.back().arrival_facing = arrival_facing_preview_direction
+		print("[ArrivalFacing] Confirmed on last queued waypoint: ", arrival_facing_preview_direction)
+	elif current_waypoint != null:
+		current_waypoint.arrival_facing = arrival_facing_preview_direction
+		print("[ArrivalFacing] Confirmed on current waypoint: ", arrival_facing_preview_direction)
+	arrival_facing_preview_active = false
+
+# ============================== PROCESS ==============================
 
 func _process(_delta: float) -> void:
 	draw_debug_vectors(_dbg_direction, _dbg_forward_vel, _dbg_lateral_vel, _dbg_linear_vel)
+	if current_moving_mode == ShipMovingMode.SHIFT_DIRECTION:
+		draw_ship_direciton_move_debug(shift_target_position, arrival_facing_preview_direction)
 
 	rich_text_label.text = \
-		"state			: "       + str(current_state) + \
 		"\nLin P to M ratio: "         + str(snappedf(linear_power_to_mass_ratio, 0.01)) + \
 		"\nRot P to M ratio: "         + str(snappedf(rotation_power_to_mass_ratio, 0.01)) + \
 		"\nLinear velocity  : "       + str(snappedf(_dbg_linear_vel.length(), 0.01)) + " m/s" + \
@@ -187,6 +212,10 @@ func _process(_delta: float) -> void:
 		"\nDistance         : "       + str(snappedf(_dbg_distance, 0.01)) + \
 		"\nBrake distance   : "       + str(snappedf(_dbg_braking_dist, 0.01)) + \
 		"\nDistance traveled: "       + str(snappedf(distance_traveled, 0.01)) + " m"
+	
+	rich_text_label_2.text = \
+		"state			: "       + str(current_state) + \
+		"\nmoving state	: "       + str(current_moving_mode)
 
 func _physics_process(delta: float) -> void:
 	match current_state:
@@ -197,7 +226,8 @@ func _physics_process(delta: float) -> void:
 func handle_state_idle(_delta: float) -> void:
 	# Trong trạng thái IDLE, tàu sẽ từ từ dừng lại bằng lực ngược hướng vận tốc hiện tại
 	if current_waypoint == null:
-		apply_central_force(-linear_velocity * max_thrust_force * linear_power_to_mass_ratio)
+		apply_central_force(-linear_velocity * max_thrust_force * linear_power_to_mass_ratio * 0.5)
+		auto_throttle = 0.0
 		
 # Hàm đổi state — chỉ đổi khi khác state hiện tại
 func change_state(new_state: PlayerState) -> void:
@@ -210,6 +240,17 @@ func change_state(new_state: PlayerState) -> void:
 	current_state = new_state
 	print("State changed to: ", current_state)
 
+# Hàm đổi state — chỉ đổi khi khác state hiện tại
+func change_moving_state(new_state: ShipMovingMode) -> void:
+	if current_moving_mode == new_state: return
+
+	match new_state:
+		ShipMovingMode.SEQUENCE: pass
+		ShipMovingMode.SHIFT_DIRECTION: pass
+
+	current_moving_mode = new_state
+	print("Moving mode changed to: ", current_moving_mode)
+
 # ============================== INTEGRATE FORCES (KINEMATIC OVERRIDE) ======================================
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
@@ -218,10 +259,6 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	# Tích lũy quãng đường
 	distance_traveled += state.transform.origin.distance_to(last_position)
 	last_position = state.transform.origin
-	
-	# Load waypoint kế tiếp nếu current_waypoint hết
-	if current_waypoint == null and ship_movement_waypoints.size() > 0:
-		load_next_waypoint()
 
 	# Xử lý state
 	match current_state:
@@ -230,7 +267,6 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 			apply_roll_correction(state, delta)
 			apply_pitch_correction(state, delta)
 		PlayerState.MOVE: 
-	
 			# Xử lý di chuyển
 			_integrate_movement(state, delta)
 	
@@ -285,10 +321,12 @@ func _integrate_movement(state: PhysicsDirectBodyState3D, delta: float) -> void:
 			if current_waypoint and is_instance_valid(current_waypoint.point_marker):
 				current_waypoint.point_marker.queue_free()
 
+			# Giữ hướng ship về phương ngang mặt đất khi về IDLE
+			current_target_direction = Vector3(current_waypoint.arrival_facing.x, 0.0, current_waypoint.arrival_facing.z)
 			current_waypoint = null
-			# Giữ hướng ship về phương ngang mặt đất khi về IDLE, KHÔNG lật hướng, chỉ reset Y
-			current_target_direction = Vector3(current_target_direction.x, 0.0, current_target_direction.z)
 
+			_dbg_direction = current_target_direction
+   
 			change_state(PlayerState.IDLE)
 		
 
@@ -356,6 +394,12 @@ func _integrate_lateral_damping(state: PhysicsDirectBodyState3D, delta: float) -
 
 # Hàm này ghi đè (Override) sức xoay của lý thuyết Rigid bằng thuật toán Look_At Quaternion
 func update_rotation(state: PhysicsDirectBodyState3D, desired_dir: Vector3, delta: float) -> void:
+	# Xử lý trường hợp không có hướng (điểm đến trùng với vị trí hiện tại) → giữ nguyên hướng hiện tại
+	if desired_dir.length_squared() < 0.000001:
+		desired_dir = -state.transform.basis.z
+		if desired_dir.length_squared() < 0.000001:
+			return
+
 	# 1. Tính toán đích đến cuối cùng của mặt phẳng xoay 
 	# Luôn gán mặt phẳng UP song song với sàn để không bao giờ Roll (Xoắn / lật nghiêng)
 	var up_ref := Vector3.UP
@@ -531,7 +575,7 @@ func move_to(new_position: Vector3, is_sequence: bool = false) -> void:
 		previous_position = global_position
 
 	# 4. Tạo waypoint mới và thêm vào hàng đợi
-	var new_waypoint = Movement_Waypoint.new(new_position, previous_position)
+	var new_waypoint = Movement_Waypoint.new(new_position, previous_position, "sequence")
 	add_child(new_waypoint.point_marker)     # Hiện marker trực quan
 	ship_movement_waypoints.append(new_waypoint)
 
@@ -556,7 +600,7 @@ func clear_all_waypoints() -> void:
 	current_target_position = Vector3.ZERO
 	current_target_direction = -global_transform.basis.z
 	
-	change_state(PlayerState.IDLE)
+	# change_state(PlayerState.IDLE)
 
 # Hàm load waypoint tiếp theo từ hàng đợi
 func load_next_waypoint() -> void:
@@ -574,6 +618,12 @@ func load_next_waypoint() -> void:
 		
 	else:
 		current_waypoint = null
+
+# Hàm tạo shift waypoint
+func create_shift_waypoint(position: Vector3) -> void:
+	var shift_waypoint = Movement_Waypoint.new(position, Vector3.ZERO, "shift")
+	ship_movement_waypoints.append(shift_waypoint)
+	add_child(shift_waypoint.point_marker)
 
 # ============================= DEBUG MESH =============================================
 
@@ -603,5 +653,31 @@ func draw_debug_vectors(desired_direction: Vector3, fwd_vel: Vector3, lat_vel: V
 	m.surface_add_vertex(origin)
 	m.surface_set_color(Color.PURPLE)
 	m.surface_add_vertex(origin + lin_vel * 2.0)
+
+	# YELLOW: arrival facing preview — vẽ từ vị trí waypoint cuối
+	if arrival_facing_preview_active and arrival_facing_preview_direction != Vector3.ZERO:
+		var wp_origin := global_position
+		if not ship_movement_waypoints.is_empty():
+			wp_origin = ship_movement_waypoints.back().position
+		elif current_waypoint != null:
+			wp_origin = current_waypoint.position
+		wp_origin += Vector3(0, 2.0, 0)
+		m.surface_set_color(Color.YELLOW)
+		m.surface_add_vertex(wp_origin)
+		m.surface_set_color(Color.YELLOW)
+		m.surface_add_vertex(wp_origin + arrival_facing_preview_direction * 6.0)
+
+	m.surface_end()
+
+func draw_ship_direciton_move_debug(position: Vector3, direction: Vector3) -> void:
+	var m = debug_vector_mesh.mesh as ImmediateMesh
+	m.clear_surfaces()
+	m.surface_begin(Mesh.PRIMITIVE_LINES)
+
+	# Vẽ tia nối từ ship đến target position
+	m.surface_set_color(Color.GREEN)
+	m.surface_add_vertex(position)
+	m.surface_set_color(Color.GREEN)
+	m.surface_add_vertex(position + direction.normalized() * 5.0)
 
 	m.surface_end()

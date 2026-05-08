@@ -33,3 +33,6 @@ func deactivate() -> void:
 func set_default_properties() -> void:
 	# Set lại spring length
 	spring_arm.spring_length = spring_arm_length
+
+func handle_scene_input(_event: InputEvent) -> bool:
+	return false

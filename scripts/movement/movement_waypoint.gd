@@ -6,13 +6,15 @@ var position: Vector3
 var direction: Vector3          # Hướng bay đến waypoint này (từ waypoint trước)
 var arrival_facing: Vector3    # Hướng ship cần nhìn KHI ĐẾN đích (Vector3.ZERO = không set)
 var point_marker: MeshInstance3D
+var type: String #["sequence", "shift", "preview"] - sequence và shift move
 
 # Init nhận vào position mới và direction của target trước đó
-func _init(new_position: Vector3, previous_position: Vector3) -> void:
+func _init(new_position: Vector3, previous_position: Vector3, type: String) -> void:
 	self.position = new_position
 	self.direction = previous_position.direction_to(new_position).normalized()
-	self.arrival_facing = Vector3.ZERO  # Mặc định không set, scene controller sẽ gọi confirm_arrival_facing() để ghi
+	self.arrival_facing = previous_position.direction_to(new_position).normalized()  # Mặc định theo direction
 	self.point_marker = spawn_target_marker(new_position)
+	self.type = type
 
 func spawn_target_marker(spawn_position: Vector3) -> MeshInstance3D:
 	var marker = MeshInstance3D.new()
@@ -28,7 +30,7 @@ func spawn_target_marker(spawn_position: Vector3) -> MeshInstance3D:
 	marker.material_override = mat
 	
 	marker.top_level = true
-	marker.global_position = spawn_position
+	marker.position = spawn_position
 	
 	# Thêm vào scene
 	#add_child(marker)
