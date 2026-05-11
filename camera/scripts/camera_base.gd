@@ -18,9 +18,6 @@ func _ready() -> void:
 	spring_arm.spring_length = spring_arm_length
 	base_quaternion = quaternion
 	base_spring_rotation_x = spring_arm.rotation.x
-	
-	# In ra tên của node để không bị nhầm lẫn giữa các camera
-	print("[", name, "] Biến cấu hình: ", spring_arm_length, " | Thực tế của gậy: ", spring_arm.spring_length, " | Camera type: ", camera_type)
 
 func _process(delta: float) -> void:
 	# Reset camera về sau đuôi tàu khi thả chuột

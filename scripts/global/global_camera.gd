@@ -31,7 +31,6 @@ func _input(event: InputEvent) -> void:
 		var camera_free = current_camera_list.get(CameraType.FREE, null)
 		if camera_free != null:
 			switch_to(camera_free)
-			get_viewport().set_input_as_handled()
 			return
 	
 	if event.is_action_pressed("change_to_character_camera"):
@@ -39,20 +38,17 @@ func _input(event: InputEvent) -> void:
 			var camera_ship_far = current_camera_list.get(CameraType.SHIP_FAR, null)
 			if camera_ship_far != null:
 				switch_to(camera_ship_far)
-				get_viewport().set_input_as_handled()
 				return
 				
 		if current_camera_type == CameraType.SHIP_FAR:
 			var camera_ship_close = current_camera_list.get(CameraType.SHIP_CLOSE, null)
 			if camera_ship_close != null:
 				switch_to(camera_ship_close)
-				get_viewport().set_input_as_handled()
 				return
 		else:
 			var camera_ship_far = current_camera_list.get(CameraType.SHIP_FAR, null)
 			if camera_ship_far != null:
 				switch_to(camera_ship_far)
-				get_viewport().set_input_as_handled()
 				return
 				
 	# Xoay camera
@@ -73,15 +69,12 @@ func _input(event: InputEvent) -> void:
 			# Nhìn lên/xuống: Chỉ xoay SpringArm theo trục X (Đảo dấu trừ thành trừ)
 			current_rig.spring_arm.rotation.x -= event.relative.y * current_rig.mouse_sensitivity
 			current_rig.spring_arm.rotation.x = clamp(current_rig.spring_arm.rotation.x, current_rig.min_vertical_angle, current_rig.max_vertical_angle)
-			get_viewport().set_input_as_handled()
 	
 	else:
 		if event.is_action_pressed("camera_zoom_in"):
 			current_rig.spring_arm.spring_length = max(current_rig.min_zoom, current_rig.spring_arm.spring_length - current_rig.zoom_step)
-			get_viewport().set_input_as_handled()
 		if event.is_action_pressed("camera_zoom_out"):
 			current_rig.spring_arm.spring_length = min(current_rig.max_zoom, current_rig.spring_arm.spring_length + current_rig.zoom_step)
-			get_viewport().set_input_as_handled()
 
 func switch_to(new_rig: CameraRigBase) -> void:
 	if current_rig == new_rig:

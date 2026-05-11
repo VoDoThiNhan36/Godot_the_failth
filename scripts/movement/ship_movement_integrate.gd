@@ -58,13 +58,25 @@ var is_at_current_waypoint_threshold := false        # Flag đã vào vùng ngư
 var shift_target_position := Vector3.ZERO
 var shift_target_distance := 10.0
 
-# ============================== TRẠNG THÁI ======================================
-
+# ============================== STATE ======================================
+# Player state
 enum PlayerState { IDLE, MOVE }
 enum ShipSteeringMode { CONTEXT, FAJEN_WARREN }
-enum ShipMovingMode {SEQUENCE, SHIFT_DIRECTION}
+enum InputMovingState {IDLE, SEQUENCE_MOVE, SHIFT_DIRECTION, HOLD_WAYPOINT, DRAG_CHANGE_DIRECTION}
 var current_state: PlayerState
-var current_moving_mode: ShipMovingMode
+var current_moving_mode: InputMovingState
+
+# Input state
+enum FlightInputState { IDLE, SEQUENCE_MOVE, SHIFT_MOVE, FACING_HOLD, FACING_DRAG }
+var current_input_state: FlightInputState = FlightInputState.IDLE
+
+var _facing_drag_threshold  := 12.0				# Khoảng cách di chuột tối thiểu để bắt đầu chỉnh hướng khi đang hold waypoint
+var _facing_drag_accumulated := 0.0				# Khoảng cách di chuột tích lũy được khi đang hold waypoint
+var _facing_dir_accum       := Vector2.ZERO		# Vector tích lũy hướng di chuột để xác định hướng chỉnh sửa
+var _hold_timer             := 0.0				# Bộ đếm thời gian để phân biệt click nhanh và hold khi nhấn nút sequence move
+var _hold_threshold         := 0.2				# Ngưỡng thời gian (s) để phân biệt click nhanh và hold khi nhấn nút sequence move
+var _pending_click_pos      := Vector3.ZERO		# Vị trí click chuột được raycast từ camera, dùng để tạo waypoint khi thả chuột sau hold hoặc click nhanh
+
 # ============================== DEBUG ======================================
 
 var debug_vector_mesh := MeshInstance3D.new()	# Mesh debug cho các vector di chuyển
@@ -98,7 +110,7 @@ func _ready() -> void:
 
 	# Set state ban đầu
 	current_state = PlayerState.IDLE
-	current_moving_mode = ShipMovingMode.SEQUENCE
+	current_moving_mode = InputMovingState.IDLE
 	current_target_direction = -global_transform.basis.z
 	
 	# Internal setup
@@ -122,10 +134,6 @@ func _ready() -> void:
 	add_child(debug_vector_mesh)
 
 # ============================== PUBLIC INPUT API ======================================
-# Không có _unhandled_input ở đây — ship KHÔNG tự xử lý input.
-# Scene controller (ship_moving_scene.gd) đọc input rồi gọi các hàm API bên dưới.
-# Lợi ích: ship không biết phím nào được nhấn, dễ remap, dễ test, không conflict.
-
 ## Chỉnh độ cao waypoint cuối (hoặc target hiện tại) theo offset scroll.
 ## Gọi từ scene controller khi nhận scroll event + đúng context.
 ## offset: +1.0 = lên, -1.0 = xuống
@@ -183,11 +191,190 @@ func confirm_last_waypoint_arrival_facing() -> void:
 		print("[ArrivalFacing] Confirmed on current waypoint: ", arrival_facing_preview_direction)
 	arrival_facing_preview_active = false
 
+# ============================== FLIGHT INPUT STATE MACHINE ======================================
+
+## Process để tính thời gian hold, nếu đủ delta time thì chuyển qua FACING HOLD (giữ waypoint để chỉnh hướng)
+func process_flight_input(delta: float) -> void:
+	match current_input_state:
+		FlightInputState.SEQUENCE_MOVE:
+			# Tích lũy thời gian hold khi đang giữ nút sequence move, nếu đủ thời gian thì chuyển sang state FACING_HOLD
+			_hold_timer += delta
+			# Kiểm tra, nếu đang hold thì chuyển state sang FACING_HOLD để chuẩn bị chỉnh hướng
+			if _hold_timer >= _hold_threshold:
+				_change_flight_state(FlightInputState.FACING_HOLD)
+
+## Hàm xử lý input chính
+func _unhandled_input(event: InputEvent) -> void:
+	var camera_3d = Global_Camera.get_active_camera()	# Lấy camera đang active từ global để tính raycast, basis, v.v.
+	var click_position := Vector3.ZERO	
+	var camera_basis : Basis = camera_3d.global_transform.basis if camera_3d != null else Basis.IDENTITY
+		
+	# Xử lý input cho scroll wheel để chỉnh height
+	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+		# Kiểm tra phím modifier để xác định chỉnh height của shift move hay sequence move
+		var is_seq   := Input.is_action_pressed("sequence_move")
+
+		var offset := 1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1.0	
+
+		if is_seq:
+			adjust_waypoint_target_height(offset)
+		# else:
+		# 	adjust_shift_target_height(offset)
+	
+	# Xử lý input cho shift direction move
+	# Tạo 1 waypoint tạm thời ở vị trí click + hướng nhìn * khoảng cách, và bật chế độ shift direction move
+	if event.is_action_pressed("direction_shift_move") and click_position != Vector3.ZERO:
+		create_shift_waypoint(click_position)
+
+	match current_input_state:
+		FlightInputState.IDLE:          input_state_idle(event, camera_3d)
+		FlightInputState.SEQUENCE_MOVE: input_state_sequence_move(event)
+		FlightInputState.SHIFT_MOVE:    pass
+		FlightInputState.FACING_HOLD:   input_state_facing_hold(event)
+		FlightInputState.FACING_DRAG:   input_state_facing_drag(event, camera_basis)
+
+func _change_flight_state(new_state: FlightInputState) -> void:
+	if current_input_state == new_state: return
+
+	match current_input_state:
+		FlightInputState.IDLE:
+			pass
+
+		FlightInputState.SEQUENCE_MOVE:
+			pass
+
+		FlightInputState.SHIFT_MOVE:
+			pass
+
+		FlightInputState.FACING_HOLD:
+			pass
+		
+		FlightInputState.FACING_DRAG:
+			pass
+
+	match new_state:
+		FlightInputState.IDLE:
+			pass
+
+		FlightInputState.SHIFT_MOVE:
+			pass
+
+		# Reset timer check holding khi mới vào SEQUENCE_MOVE
+		FlightInputState.SEQUENCE_MOVE:
+			_hold_timer = 0.0
+
+		# Reset accum khi mới vào FACING_HOLD, giữ nguyên accum khi vào FACING_DRAG để tiếp tục cộng dồn cho đến khi thả chuột
+		FlightInputState.FACING_HOLD:
+			_facing_drag_accumulated = 0.0
+			_facing_dir_accum = Vector2.ZERO
+		
+		FlightInputState.FACING_DRAG:
+			pass  # kế thừa accum từ FACING_HOLD, không reset
+		
+
+	current_input_state = new_state
+
+# Hàm xử lý Input state IDLE
+# Click -> Sequence move -> Nếu giữ nút sequence -> Nhận scroll chỉnh height -> Nhấn giữ chuột -> Cho điều chỉnh hướng
+# Nhấn nút shift move -> Shift move -> Nhận mouse motion để chỉnh độ dài + hướng
+func input_state_idle(event: InputEvent, camera_3d: Camera3D) -> void:
+	# Xử lý input cho click chuột phải (bắt sự kiện nhấn chuột) tạo waypoint mới
+	if event.is_action_pressed("move"):
+		# Lấy vị trí raycast input từ chuột
+		var click_position = Global_RayQuery3d.shoot_ray_3d(camera_3d, self)
+
+		# ================== MODIFIER CHECK ==================
+		# Kiểm tra modifier để xác định loại di chuyển: có giữ "sequence_move" thì vào sequence move, không thì shift direction move
+		if Input.is_action_pressed("sequence_move"):
+			_pending_click_pos = click_position
+			_change_flight_state(FlightInputState.SEQUENCE_MOVE)
+		# Nếu không giữ "sequence_move", thì tạo waypoint mới + clear waypoint cũ
+		else:
+			move_to(click_position, false)
+
+	# Xử lý input clear waypoint
+	if event.is_action_pressed("clear_waypoints"):
+		clear_all_waypoints()
+		# Cancel all state về IDLE
+		_change_flight_state(FlightInputState.IDLE)
+		change_state(PlayerState.IDLE)
+
+# Hàm xử lý nút sequence move đang giữ để vào trạng thái chờ hold, nếu đủ thời gian hold sẽ vào trạng thái chỉnh hướng
+func input_state_sequence_move(event: InputEvent) -> void:
+	# Nếu là click nhanh (bắt sự kiện thả chuột), thì vẫn tạo sequence waypoint bình thường, và thoát về IDLE
+	if event.is_action_released("move"):
+		move_to(_pending_click_pos, true)
+		_change_flight_state(FlightInputState.IDLE)
+
+# Hàm xử lý nhấn giữ chuột để chỉnh hướng
+func input_state_facing_hold(event: InputEvent) -> void:
+	# Giữ đủ lâu nhưng không drag → vẫn tạo sequence waypoint bình thường (không có chỉnh hướng)
+	if event.is_action_released("move"):
+		move_to(_pending_click_pos, true)
+		_change_flight_state(FlightInputState.IDLE)
+		return
+
+	# Nếu đang giữ chuột, nhưng có di chuyển → vào state FACING_DRAG để tiếp tục cộng dồn hướng chỉnh sửa
+	if event is InputEventMouseMotion:
+		_facing_drag_accumulated += event.relative.length()
+		_facing_dir_accum += event.relative
+		if _facing_drag_accumulated > _facing_drag_threshold:
+			_change_flight_state(FlightInputState.FACING_DRAG)
+
+# Hàm xử lý di chuyển chuột để chỉnh hướng khi đang giữ chuột
+func input_state_facing_drag(event: InputEvent, camera_basis: Basis) -> void:
+	# Nếu thả chuột khi đang chỉnh hướng → xác nhận hướng chỉnh sửa vào waypoint cuối và thoát về IDLE
+	if event.is_action_released("move"):
+		confirm_last_waypoint_arrival_facing()
+		set_arrival_facing_preview(Vector3.ZERO, false)
+		_change_flight_state(FlightInputState.IDLE)
+		return
+
+	# Nếu vẫn đang giữ chuột và có di chuyển → cập nhật preview hướng chỉnh sửa
+	if event is InputEventMouseMotion:
+		_facing_dir_accum += event.relative
+		var preview_dir := calculate_translate_direction_from_mouse_motion(_facing_dir_accum, camera_basis)
+		if preview_dir != Vector3.ZERO:
+			set_arrival_facing_preview(preview_dir, true)
+
+# Hàm translate Vector2 tích lũy thành vector3 hướng chỉnh sửa dựa trên basis của camera
+func calculate_translate_direction_from_mouse_motion(accum: Vector2, camera_basis: Basis) -> Vector3:
+	# Nếu vector tích lũy quá nhỏ, trả về ZERO để không chỉnh hướng
+	if accum.length_squared() < 1.0:
+		return Vector3.ZERO
+	
+	var camera_right := camera_basis.x		# Vector right của camera để tính hướng ngang
+	var camera_forward_flat := camera_basis.z # Vector forward của camera, nhưng bỏ qua thành phần y để chỉ lấy hướng trên mặt phẳng XZ
+	camera_forward_flat.y = 0.0			# Đặt y về 0 để đảm bảo hướng chỉnh chỉ nằm trên mặt phẳng ngang
+
+	# Check nếu vector hướng gần như bằng 0, thì cho mặc ddingj là (0,0,1) để tránh lỗi normalize ZERO
+	if camera_forward_flat.length_squared() < 0.0001:
+		camera_forward_flat = Vector3.BACK # +Z đồng bộ với camera z
+	
+	# Normalize lại camera foward sau khi bỏ y 
+	# Camera right thì không cần normalize vì camera đổi góc tương đương xoay zy trên trục x, nên x không đổi
+	else:
+		camera_forward_flat = camera_forward_flat.normalized()
+
+	# Tính hướng chỉnh sửa dựa trên vector tích lũy và basis của camera
+	var world_dir := camera_right * accum.x + camera_forward_flat * accum.y
+	world_dir.y = 0.0
+
+	# Check nếu vector hướng gần như bằng 0, thì trả về ZERO để không chỉnh hướng
+	if world_dir.length_squared() < 0.0001:
+		return Vector3.ZERO
+	
+	return world_dir.normalized()
+
 # ============================== PROCESS ==============================
 
 func _process(_delta: float) -> void:
+	# Process input
+	process_flight_input(_delta)
+
+	# Debug draw và debug text mỗi frame
 	draw_debug_vectors(_dbg_direction, _dbg_forward_vel, _dbg_lateral_vel, _dbg_linear_vel)
-	if current_moving_mode == ShipMovingMode.SHIFT_DIRECTION:
+	if current_moving_mode == InputMovingState.SHIFT_DIRECTION:
 		draw_ship_direciton_move_debug(shift_target_position, arrival_facing_preview_direction)
 
 	rich_text_label.text = \
@@ -241,12 +428,12 @@ func change_state(new_state: PlayerState) -> void:
 	print("State changed to: ", current_state)
 
 # Hàm đổi state — chỉ đổi khi khác state hiện tại
-func change_moving_state(new_state: ShipMovingMode) -> void:
+func change_moving_state(new_state: InputMovingState) -> void:
 	if current_moving_mode == new_state: return
 
 	match new_state:
-		ShipMovingMode.SEQUENCE: pass
-		ShipMovingMode.SHIFT_DIRECTION: pass
+		InputMovingState.SEQUENCE_MOVE: pass
+		InputMovingState.SHIFT_DIRECTION: pass
 
 	current_moving_mode = new_state
 	print("Moving mode changed to: ", current_moving_mode)

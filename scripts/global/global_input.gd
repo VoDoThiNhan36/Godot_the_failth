@@ -1,7 +1,9 @@
 extends Node
 
 enum GameState {MENU, PLAY}
+enum InputState {NONE, SEQUENCE_MOVE, SHIFT_MOVE}
 var current_game_state: GameState
+var current_input_state: InputState
 
 # Input exclude
 var camera_exclude_input_list = ["sequence_move", "direction_shift_move"]
@@ -15,11 +17,19 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 	
+	# Toggle mouse capture / release
+	if event.is_action_pressed("toggle_mouse"):
+		if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		else:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		get_viewport().set_input_as_handled()
+		
+	# Camera input
 	if _input_active_camera(event):
 		get_viewport().set_input_as_handled()
 		return
 		
-	
 func _unhandled_input(event: InputEvent) -> void:
 	## ESCAPE
 	# for menu
@@ -28,20 +38,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			current_game_state = GameState.MENU
 		get_viewport().set_input_as_handled()
 	
-	# Toggle mouse capture / release
-	if event.is_action_pressed("toggle_mouse"):
-		if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		else:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		get_viewport().set_input_as_handled()
-	
 func _input_active_camera(event: InputEvent) -> bool:
 	if Global_Camera.current_rig == null:
 		return false
-
-	if Global_Camera.current_rig.has_method("handle_scene_input"):
-		return Global_Camera.current_rig.handle_scene_input(event)
+	
+	Global_Camera._input(event)
 
 	return false
 	

@@ -3,8 +3,8 @@ extends CameraRigBase
 @export_group("Free Camera Settings")
 @export var acceleration := 100.0
 @export var move_speed := 18.0
-@export_range(0.0, 20.0, 1.0, "length_number") var min_camera_zoom := 0.0
-@export_range(0.0, 20.0, 1.0, "length_number") var max_camera_zoom := 0.0
+@export_range(0.0, 20.0, 1.0, "length_number") var min_zoom := 0.0
+@export_range(0.0, 20.0, 1.0, "length_number") var max_zoom := 0.0
 @export var zoom_step := 1.0
 @export var min_vertical_angle := -PI/2
 @export var max_vertical_angle := PI/2
@@ -15,36 +15,6 @@ var look_angles := Vector2.ZERO
 func _ready() -> void:
 	super._ready()
 	deactivate() # Mặc định tắt khi mới load scene
-
-func handle_scene_input(event: InputEvent) -> bool:
-	#if not is_active:
-		#return false
-#
-	#if Input.is_action_pressed("sequence_move") or Input.is_action_pressed("direction_shift_move"):
-		#return false
-
-	# Xoay camera bằng chuột
-	# Xoay theo 2 node: Node gốc xoay ngang, node spring arm xoay dọc
-	#if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		## Nhìn trái/phải: Xoay toàn bộ cụm theo trục Y
-		#rotation.y -= event.relative.x * mouse_sensitivity
-		#
-		## Nhìn lên/xuống: Chỉ xoay SpringArm theo trục X (Đảo dấu trừ thành trừ)
-		#spring_arm.rotation.x -= event.relative.y * mouse_sensitivity
-		#
-		## Giới hạn góc nhìn lên xuống không bị lộn vòng (90 độ)
-		#spring_arm.rotation.x = clamp(spring_arm.rotation.x, min_vertical_angle, max_vertical_angle)
-		#return true
-
-	# if event is InputEventMouseButton and event.pressed:
-	# 	if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-	# 		spring_arm.spring_length = max(min_camera_zoom, spring_arm.spring_length - zoom_step)
-	# 		return true
-	# 	if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-	# 		spring_arm.spring_length = min(max_camera_zoom, spring_arm.spring_length + zoom_step)
-	# 		return true
-
-	return false
 
 func _process(delta: float) -> void:
 	# Không gọi super._process() — free camera không reset rotation về base
