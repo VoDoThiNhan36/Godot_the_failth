@@ -20,26 +20,9 @@ gravity_scale = 0.0
 can_sleep = false
 freeze_mode = 1
 script = ExtResource("1_y8gn2")
-linear_accel_time = null
 max_thrust_force = 500.0
-linear_damp_value = null
-arrival_radius = null
-blend_arrival_distance = null
-lateral_damp_value = null
-rotation_accel_time = null
-max_angular_speed = null
 max_turn_torque = 250.0
-rotation_p = null
-rotation_d = null
-angular_damp_value = null
 rotation_start_delay = 1.0
-rotation_delay_threshold = null
-rotation_fine_zone = null
-angle_change_factor = null
-angle_fine_factor = null
-max_roll_angle = null
-max_pitch_angle = null
-angular_damp_roll = null
 angular_damp_pitch = 5.0
 angular_stable_power_ratio = 0.2
 
@@ -52,14 +35,15 @@ shape = SubResource("CapsuleShape3D_4icm7")
 [node name="Camera_Pivot_Far" parent="RigidBody3D" instance=ExtResource("4_l5wq2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 6, 10)
 min_zoom = 1.0
-zoom_step = 1.0
+max_horizontal_angle = 1.5707963267948966
 
 [node name="Camera_Pivot_Close" parent="RigidBody3D" instance=ExtResource("4_l5wq2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.530899, 0)
 min_zoom = 0.0
 max_zoom = 1.0
-zoom_step = 1.0
+max_horizontal_angle = 1.5707963267948966
 spring_arm_length = 0.0
+camera_type = 3
 
 [node name="DebugTrail" type="MeshInstance3D" parent="RigidBody3D"]
 script = ExtResource("4_r6fdk")

@@ -1,12 +1,13 @@
-[gd_scene load_steps=3 format=3 uid="uid://deda8qjf2oosa"]
+[gd_scene load_steps=3 format=3 uid="uid://w6cuhgpky3mt"]
 
-[ext_resource type="Script" uid="uid://gtc7uxh1fq5l" path="res://Scripts/Camera/camera_base.gd" id="1_kyruh"]
+[ext_resource type="Script" uid="uid://gtc7uxh1fq5l" path="res://camera/scripts/camera_base.gd" id="1_kyruh"]
 
 [sub_resource type="SphereShape3D" id="SphereShape3D_xlq8g"]
 
 [node name="CameraBase" type="Node3D"]
 visible = false
 script = ExtResource("1_kyruh")
+camera_type = 2
 
 [node name="SpringArm3D" type="SpringArm3D" parent="."]
 collision_mask = 2

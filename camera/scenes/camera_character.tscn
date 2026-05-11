@@ -1,12 +1,13 @@
 [gd_scene load_steps=3 format=3 uid="uid://mtagy60tsl4h"]
 
-[ext_resource type="PackedScene" path="res://camera/scenes/camera_base.tscn" id="1_gaehu"]
+[ext_resource type="PackedScene" uid="uid://w6cuhgpky3mt" path="res://camera/scenes/camera_base.tscn" id="1_gaehu"]
 [ext_resource type="Script" uid="uid://d1wms5ceoxnp4" path="res://camera/scripts/camera_character_node.gd" id="2_jwwbf"]
 
 [node name="Camera_Character" instance=ExtResource("1_gaehu")]
 script = ExtResource("2_jwwbf")
 min_zoom = 6.0
 max_zoom = 20.0
+zoom_step = 1.0
 min_vertical_angle = -0.7853981633974483
 max_vertical_angle = 0.7853981633974483
 return_speed = 10.0

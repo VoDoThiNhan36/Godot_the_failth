@@ -295,7 +295,6 @@ func _integrate_movement(state: PhysicsDirectBodyState3D, delta: float) -> void:
 		# Tính hướng từ vị trí hiện tại đến target
 		current_target_direction = direction_to_target
 		_dbg_direction = current_target_direction
-		print("long")
 
 	# Nếu đã vào vùng blend_arrival_distance nhưng chưa vào arrival_radius → bắt đầu chuyển hướng về hướng ban đầu
 	# Tránh tình trạng ship đổi hướng vô hạn khi đến gần đích mà vẫn chưa vào radius
@@ -307,11 +306,9 @@ func _integrate_movement(state: PhysicsDirectBodyState3D, delta: float) -> void:
 		# Slerp giữa hướng đích đến và hướng click chuột ban đầu
 		current_target_direction = direction_to_target.slerp(current_waypoint.direction, blend_weight).normalized()
 		_dbg_direction = current_target_direction
-		print("short")
 
 	# Kiểm tra đã đến đích
 	else:
-		print("dang")
 		# Đến waypoint → load waypoint tiếp theo nếu có, nếu không thì về IDLE
 		if ship_movement_waypoints.size() > 0:
 			load_next_waypoint()
