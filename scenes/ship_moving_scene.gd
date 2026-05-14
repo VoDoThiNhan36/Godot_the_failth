@@ -44,25 +44,12 @@ func _ready() -> void:
 #   3. Gameplay input (move/facing/builder...)
 
 func _input(event: InputEvent) -> void:
-	if _input_global(event):
-		get_viewport().set_input_as_handled()
-		return
+	# Gọi input của Global trước để xử lý các phím chung (menu, toggle mouse, switch camera)
+	Global_Input._input(event)
 
 	match current_gameplay_mode:
 		GameplayInputMode.FLIGHT: 
-			if _input_flight(event): 
-				get_viewport().set_input_as_handled()
-				return
-
-# ============================== GLOBAL INPUT (luôn active) ======================================
-
-func _input_global(event: InputEvent) -> bool:
-	Global_Input._input(event)
-	return false
-
-func _input_flight(event: InputEvent) -> bool:
-	ship_player._unhandled_input(event)
-	return false
+			pass # Ship tự xử lý input qua _unhandled_input của chính nó
 
 # ============================== GAMEPLAY MODE SWITCHER ==============================
 

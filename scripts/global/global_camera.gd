@@ -9,10 +9,18 @@ func _ready() -> void:
 	pass
 
 func _input(event: InputEvent) -> void:
+	# Input camera sẽ được handle ở Global Input
+	pass
+
+func handle_input(event: InputEvent) -> bool:
 	# Exclude input from 
 	for action in Global_Input.camera_exclude_input_list:
 		if Input.is_action_pressed(action):
-			return
+			return false
+	
+	for state in Global_Input.camera_exclude_state_list:
+		if Global_Input.current_input_state == state:
+			return false
 		
 	if event.is_action_pressed("change_to_free_camera"):
 		#if current_camera_type == CameraType.MAIN:
@@ -31,25 +39,25 @@ func _input(event: InputEvent) -> void:
 		var camera_free = current_camera_list.get(CameraType.FREE, null)
 		if camera_free != null:
 			switch_to(camera_free)
-			return
+			return true
 	
 	if event.is_action_pressed("change_to_character_camera"):
 		if current_camera_type == CameraType.MAIN or current_camera_type == CameraType.FREE:
 			var camera_ship_far = current_camera_list.get(CameraType.SHIP_FAR, null)
 			if camera_ship_far != null:
 				switch_to(camera_ship_far)
-				return
+				return true
 				
 		if current_camera_type == CameraType.SHIP_FAR:
 			var camera_ship_close = current_camera_list.get(CameraType.SHIP_CLOSE, null)
 			if camera_ship_close != null:
 				switch_to(camera_ship_close)
-				return
+				return true
 		else:
 			var camera_ship_far = current_camera_list.get(CameraType.SHIP_FAR, null)
 			if camera_ship_far != null:
 				switch_to(camera_ship_far)
-				return
+				return true
 				
 	# Xoay camera
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -69,12 +77,18 @@ func _input(event: InputEvent) -> void:
 			# Nhìn lên/xuống: Chỉ xoay SpringArm theo trục X (Đảo dấu trừ thành trừ)
 			current_rig.spring_arm.rotation.x -= event.relative.y * current_rig.mouse_sensitivity
 			current_rig.spring_arm.rotation.x = clamp(current_rig.spring_arm.rotation.x, current_rig.min_vertical_angle, current_rig.max_vertical_angle)
+			return true
 	
 	else:
 		if event.is_action_pressed("camera_zoom_in"):
 			current_rig.spring_arm.spring_length = max(current_rig.min_zoom, current_rig.spring_arm.spring_length - current_rig.zoom_step)
+			return true
 		if event.is_action_pressed("camera_zoom_out"):
 			current_rig.spring_arm.spring_length = min(current_rig.max_zoom, current_rig.spring_arm.spring_length + current_rig.zoom_step)
+			return true
+	
+	# Return false nếu không có input nào được xử lý, để các node khác có thể nhận input này
+	return false
 
 func switch_to(new_rig: CameraRigBase) -> void:
 	if current_rig == new_rig:

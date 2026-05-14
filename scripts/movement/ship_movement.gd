@@ -624,7 +624,7 @@ func move_to(new_position: Vector3, is_sequence: bool = false) -> void:
 		previous_position = global_position
 
 	# 4. Tạo waypoint mới và thêm vào hàng đợi
-	var new_waypoint = Movement_Waypoint.new(new_position, previous_position)
+	var new_waypoint = Movement_Waypoint.new(new_position, previous_position, "sequence")
 	add_child(new_waypoint.point_marker)     # Hiện marker trực quan
 	ship_movement_waypoints.append(new_waypoint)
 
