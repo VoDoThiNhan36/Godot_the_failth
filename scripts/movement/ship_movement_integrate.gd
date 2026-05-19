@@ -57,6 +57,7 @@ var is_at_current_waypoint_threshold := false        # Flag đã vào vùng ngư
 # For shift direction move
 var shift_target_position := Vector3.ZERO
 var shift_target_distance := 10.0
+@export var shift_max_radius := 20.0		# Bán kính tối đa cho phép của shift waypoint tính từ ship
 
 # ============================== STATE ======================================
 # Player state
@@ -79,15 +80,19 @@ var _pending_click_pos      := Vector3.ZERO		# Vị trí click chuột được 
 
 # ============================== DEBUG ======================================
 
-var debug_vector_mesh := MeshInstance3D.new()	# Mesh debug cho các vector di chuyển
+var debug_fill_mesh := MeshInstance3D.new()    # MeshInstance để chứa cached fill mesh (ArrayMesh)
 
-# Cache để debug draw dùng ngoài _integrate_forces
+# Debug info cho label
+var _dbg_ship_position := Vector3.ZERO
 var _dbg_direction     := Vector3.ZERO
 var _dbg_forward_vel   := Vector3.ZERO
 var _dbg_lateral_vel   := Vector3.ZERO
 var _dbg_linear_vel    := Vector3.ZERO
 var _dbg_distance      := 0.0
 var _dbg_braking_dist  := 0.0
+
+# Cache để debug draw fill mesh
+var _dbg_shift_target := Vector3(1e9, 1e9, 1e9)   # Cache vị trí target lần cuối build fill mesh
 
 # Arrival facing preview (set từ scene controller khi đang drag)
 var arrival_facing_preview_direction    := Vector3.ZERO
@@ -122,16 +127,18 @@ func _ready() -> void:
 	rotation_power_to_mass_ratio = max_turn_torque / mass
 	min_distance_diagonally_move = ship_length + linear_power_to_mass_ratio * (rotation_power_to_mass_ratio / max_pitch_angle)
 
-	# Thiết lập MeshInstance3D để debug vector hướng đi
-	debug_vector_mesh.top_level = true
-	var m = ImmediateMesh.new()
-	debug_vector_mesh.mesh = m
-	var mat = StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.flags_unshaded = true
-	mat.no_depth_test = true
-	debug_vector_mesh.material_override = mat
-	add_child(debug_vector_mesh)
+	# Thiết lập MeshInstance3D cho fill mesh (ArrayMesh cached, chỉ rebuild khi dirty)
+	debug_fill_mesh.top_level = true
+	debug_fill_mesh.mesh = ArrayMesh.new()
+	var fill_mat := StandardMaterial3D.new()
+	fill_mat.vertex_color_use_as_albedo = true
+	fill_mat.flags_unshaded = true
+	fill_mat.no_depth_test = true
+	fill_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	fill_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	debug_fill_mesh.material_override = fill_mat
+	debug_fill_mesh.visible = false
+	add_child(debug_fill_mesh)
 
 # ============================== PUBLIC INPUT API ======================================
 ## Chỉnh độ cao waypoint cuối (hoặc target hiện tại) theo offset scroll.
@@ -195,7 +202,7 @@ func confirm_last_waypoint_arrival_facing() -> void:
 
 # ============================== FLIGHT INPUT STATE MACHINE ======================================
 
-## Process để tính thời gian hold, nếu đủ delta time thì chuyển qua FACING HOLD (giữ waypoint để chỉnh hướng)
+## Process để tính thời gian hold, nếu đủ delta time thì chuyển qua FACING_HOLD (giữ waypoint để chỉnh hướng)
 func process_flight_input(delta: float) -> void:
 	match current_input_state:
 		FlightInputState.SEQUENCE_MOVE:
@@ -207,11 +214,15 @@ func process_flight_input(delta: float) -> void:
 		
 		FlightInputState.SHIFT_MOVE:
 			# Set shift target position liên tục theo vị trí chuột
-			shift_target_position = get_mouse_hover_position()
-			if shift_target_position == Vector3.ZERO:
-				return
-			# Tính lại shift target position với offset height
-			shift_target_position = shift_target_position * Vector3(1, 0, 1) + Vector3(0, global_position.y + current_target_height_offset, 0)
+			var mouse_hover_position = get_mouse_hover_position()
+			if mouse_hover_position == null:
+				# Mất raycast: giữ debug/waypoint ở bán kính tối đa theo hướng hiện tại
+				shift_target_position = get_shift_fallback_position_at_max()
+			else:
+				# Tính lại shift target position với offset height
+				shift_target_position = mouse_hover_position * Vector3(1, 0, 1) + Vector3(0, global_position.y + current_target_height_offset, 0)
+				# Giới hạn bán kính SHIFT theo tham số max
+				shift_target_position = clamp_shift_target_to_max_radius(shift_target_position)
 			# Tính khoảng cách từ ship đến shift target
 			shift_target_distance = global_position.distance_to(shift_target_position)
 			# Nếu có waypoint trong hàng đợi, cập nhật vị trí waypoint cuối cùng (cũng là shift waypoint) để hiển thị marker di chuyển theo chuột
@@ -228,7 +239,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	var camera_basis := camera_3d.global_transform.basis if camera_3d != null else Basis.IDENTITY
 
 	# Raycast chỉ khi có action cần vị trí chuột, không chạy mỗi frame
-	var mouse_hover_position := Vector3.ZERO
+	var mouse_hover_position: Variant = null
 	if (event.is_action_pressed("move") or event.is_action_pressed("direction_shift_move")) and camera_3d != null:
 		mouse_hover_position = get_mouse_hover_position()
 
@@ -292,9 +303,11 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 # Hàm xử lý Input state IDLE
 # Click -> Sequence move -> Nếu giữ nút sequence -> Nhận scroll chỉnh height -> Nhấn giữ chuột -> Cho điều chỉnh hướng
 # Nhấn nút shift move -> Shift move -> Nhận mouse motion để chỉnh độ dài + hướng
-func input_state_idle(event: InputEvent, mouse_hover_position: Vector3) -> void:
+func input_state_idle(event: InputEvent, mouse_hover_position: Variant) -> void:
 	# Click chuột để di chuyển
 	if event.is_action_pressed("move"):
+		if mouse_hover_position == null:
+			return
 		# Nếu đang nhấn giữ sequence move → vào SEQUENCE_MOVE để chờ hold hoặc chỉnh hướnng
 		if Input.is_action_pressed("sequence_move"):
 			_pending_click_pos = mouse_hover_position
@@ -304,7 +317,7 @@ func input_state_idle(event: InputEvent, mouse_hover_position: Vector3) -> void:
 			move_to(mouse_hover_position, false)
 
 	# Nhấn shift move → tạo waypoint tại vị trí chuột + vào SHIFT_MOVE
-	if event.is_action_pressed("direction_shift_move") and mouse_hover_position != Vector3.ZERO:
+	if event.is_action_pressed("direction_shift_move") and mouse_hover_position != null:
 		create_shift_waypoint(mouse_hover_position)
 		_change_flight_state(FlightInputState.SHIFT_MOVE)
 
@@ -365,7 +378,7 @@ func input_state_facing_drag(event: InputEvent, camera_basis: Basis) -> void:
 
 # Hàm xử lý shift move: không cần hold threshold, vào mode ngay, scroll + drag hoạt động tự do
 # Exit: nhấn shift_move lần nữa hoặc nhấn move để clear
-func input_state_shift_move(event: InputEvent, _mouse_hover_position: Vector3, camera_basis: Basis) -> void:
+func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, camera_basis: Basis) -> void:
 	# Nhấn shift_move lần nữa → confirm facing + thoát
 	if event.is_action_pressed("direction_shift_move"):
 		confirm_last_waypoint_arrival_facing()
@@ -440,8 +453,46 @@ func get_mouse_hover_position() -> Variant:
 		var ray_result = Global_RayQuery3d.shoot_ray_3d(camera_3d, self)
 		if ray_result != null:
 			return ray_result
-			
-	return Vector3.ZERO
+
+	return null
+
+func clamp_shift_target_to_max_radius(target_pos: Vector3) -> Vector3:
+	var ship_origin_flat := Vector3(global_position.x, 0.0, global_position.z)
+	var target_flat := Vector3(target_pos.x, 0.0, target_pos.z)
+	var offset_flat := target_flat - ship_origin_flat
+	var dist_flat: float = offset_flat.length()
+
+	if dist_flat > shift_max_radius and dist_flat > 0.0001:
+		var clamped_flat: Vector3 = ship_origin_flat + offset_flat.normalized() * shift_max_radius
+		return Vector3(clamped_flat.x, target_pos.y, clamped_flat.z)
+
+	return target_pos
+
+func get_shift_fallback_position_at_max() -> Vector3:
+	# Ưu tiên: project camera ray → XZ plane tại độ cao ship để indicator vẫn theo chuột
+	var camera_3d = Global_Camera.get_active_camera()
+	var mouse_pos := get_viewport().get_mouse_position()
+	var ray_dir    := camera_3d.project_ray_normal(mouse_pos)
+
+	# Nếu raycast không trúng, sử dụng hướng từ chuột
+	var dir_flat := ray_dir
+	dir_flat.y = 0.0
+
+	# Nếu hướng gần như bằng 0, fallback về hướng thẳng sau ship 
+	# Nếu vẫn gần bằng 0, fallback về hướng thẳng sau world (đồng thời tránh lỗi normalize ZERO)
+	if dir_flat.length_squared() < 0.0001:
+		dir_flat = -global_transform.basis.z
+		dir_flat.y = 0.0
+		if dir_flat.length_squared() < 0.0001:
+			dir_flat = Vector3.BACK
+
+	dir_flat = dir_flat.normalized()
+
+	return Vector3(
+		global_position.x + dir_flat.x * shift_max_radius,
+		global_position.y + current_target_height_offset,
+		global_position.z + dir_flat.z * shift_max_radius
+	)
 
 # ============================== PROCESS ==============================
 
@@ -449,10 +500,26 @@ func _process(_delta: float) -> void:
 	# Process input
 	process_flight_input(_delta)
 
-	# Debug draw và debug text mỗi frame
+	# Debug draw: DebugDraw3D tự xóa mỗi frame, không cần dirty check
 	draw_debug_vectors(_dbg_direction, _dbg_forward_vel, _dbg_lateral_vel, _dbg_linear_vel)
+
 	if current_input_state == FlightInputState.SHIFT_MOVE and shift_target_position != Vector3.ZERO:
 		draw_ship_direciton_move_debug(global_position, shift_target_position)
+		# Fill mesh (ArrayMesh): chỉ rebuild khi ship hoặc target thay đổi đáng kể
+		# Dùng cache riêng _dbg_ship_position/_dbg_shift_target (không gán lại ở đầu frame)
+		var _pos_moved: bool = global_position.distance_squared_to(_dbg_ship_position) > 0.01
+		var _tgt_moved: bool = shift_target_position.distance_squared_to(_dbg_shift_target) > 0.01
+		if _pos_moved or _tgt_moved:
+			_rebuild_shift_fill_mesh(global_position, shift_target_position)
+			_dbg_ship_position = global_position
+			_dbg_shift_target  = shift_target_position
+		debug_fill_mesh.visible = true
+	else:
+		if debug_fill_mesh.visible:
+			debug_fill_mesh.visible = false
+			(debug_fill_mesh.mesh as ArrayMesh).clear_surfaces()
+			_dbg_ship_position = Vector3(1e9, 1e9, 1e9)
+			_dbg_shift_target  = Vector3(1e9, 1e9, 1e9)
 
 	rich_text_label.text = \
 		"\nLin P to M ratio: "         + str(snappedf(linear_power_to_mass_ratio, 0.01)) + \
@@ -883,39 +950,24 @@ func load_next_waypoint() -> void:
 		current_waypoint = null
 
 # Hàm tạo shift waypoint
-func create_shift_waypoint(position: Vector3) -> void:
-	var shift_waypoint = Movement_Waypoint.new(position, global_position, "shift")
+func create_shift_waypoint(wp_pos: Vector3) -> void:
+	var shift_pos := wp_pos * Vector3(1, 0, 1) + Vector3(0, global_position.y + current_target_height_offset, 0)
+	shift_pos = clamp_shift_target_to_max_radius(shift_pos)
+	shift_target_position = shift_pos
+	shift_target_distance = global_position.distance_to(shift_pos)
+	var shift_waypoint = Movement_Waypoint.new(shift_pos, global_position, "shift")
 	ship_movement_waypoints.append(shift_waypoint)
 	add_child(shift_waypoint.point_marker)
 
 # ============================= DEBUG MESH =============================================
 
 func draw_debug_vectors(desired_direction: Vector3, fwd_vel: Vector3, lat_vel: Vector3, lin_vel: Vector3) -> void:
-	var m = debug_vector_mesh.mesh as ImmediateMesh
-	m.clear_surfaces()
-	m.surface_begin(Mesh.PRIMITIVE_LINES)
-
 	var origin := global_position + Vector3(0, 2.0, 0)
-
-	m.surface_set_color(Color.GREEN)
-	m.surface_add_vertex(origin)
-	m.surface_set_color(Color.GREEN)
-	m.surface_add_vertex(origin + desired_direction * 5.0)
-
-	m.surface_set_color(Color.BLUE)
-	m.surface_add_vertex(origin)
-	m.surface_set_color(Color.BLUE)
-	m.surface_add_vertex(origin + fwd_vel * 2.0)
-
-	m.surface_set_color(Color.RED)
-	m.surface_add_vertex(origin)
-	m.surface_set_color(Color.RED)
-	m.surface_add_vertex(origin + lat_vel * 2.0)
-
-	m.surface_set_color(Color.PURPLE)
-	m.surface_add_vertex(origin)
-	m.surface_set_color(Color.PURPLE)
-	m.surface_add_vertex(origin + lin_vel * 2.0)
+	
+	DebugDraw3D.draw_arrow(origin, origin + desired_direction * 5.0, Color.GREEN, 0.1)
+	DebugDraw3D.draw_arrow(origin, origin + fwd_vel * 2.0, Color.BLUE, 0.1)
+	DebugDraw3D.draw_arrow(origin, origin + lat_vel * 2.0, Color.RED, 0.1)
+	DebugDraw3D.draw_arrow(origin, origin + lin_vel * 1.0, Color.PURPLE, 0.1)
 
 	# YELLOW: arrival facing preview — vẽ từ vị trí waypoint cuối
 	if arrival_facing_preview_active and arrival_facing_preview_direction != Vector3.ZERO:
@@ -925,21 +977,160 @@ func draw_debug_vectors(desired_direction: Vector3, fwd_vel: Vector3, lat_vel: V
 		elif current_waypoint != null:
 			wp_origin = current_waypoint.position
 		wp_origin += Vector3(0, 2.0, 0)
-		m.surface_set_color(Color.YELLOW)
-		m.surface_add_vertex(wp_origin)
-		m.surface_set_color(Color.YELLOW)
-		m.surface_add_vertex(wp_origin + arrival_facing_preview_direction * 6.0)
-
-	m.surface_end()
+		
+		DebugDraw3D.draw_arrow(wp_origin, wp_origin + arrival_facing_preview_direction * 6.0, Color.YELLOW, 0.1)
 
 func draw_ship_direciton_move_debug(ship_position: Vector3, shift_target_pos: Vector3) -> void:
-	var m = debug_vector_mesh.mesh as ImmediateMesh
-	m.surface_begin(Mesh.PRIMITIVE_LINES)
+	# --- Màu Matrix green ---
+	var col_h      := Color(0.18, 0.97, 0.38, 1.0)   # Quạt ngang  – xanh matrix sáng
+	var col_v      := Color(0.4,  1.0,  0.55, 1.0)   # Quạt dọc   – xanh matrix nhạt
+	var col_actual := Color(0.75, 1.0,  0.2,  0.9)   # Tia thực tế – vàng xanh
 
-	# Vẽ tia nối từ ship đến target position
-	m.surface_set_color(Color.GREEN)
-	m.surface_add_vertex(ship_position)
-	m.surface_set_color(Color.GREEN)
-	m.surface_add_vertex(shift_target_pos)
+	# --- Thiết lập tham số ---
+	var half_angle_h: float = deg_to_rad(20.0)	# Góc mở ngang của quạt (tính từ hướng chính giữa)
+	var half_angle_v: float = deg_to_rad(60.0)	# Góc mở dọc của quạt (tính từ hướng chính giữa)
+	var arc_steps    := 16	# Số đoạn để vẽ cung tròn quạt ngang
+	var max_radius: float = maxf(0.1, shift_max_radius)	# Bán kính tối đa của quạt ngang
 
-	m.surface_end()
+	var origin_flat := global_position	# Vị trí của ship
+	var target_flat := Vector3(shift_target_pos.x, global_position.y, shift_target_pos.z)	# Vị trí target
+	var dir_flat    := target_flat - origin_flat	# Vector hướng từ ship đến target trên mặt phẳng XZ (bỏ qua Y)
+	var radius_xz_raw: float = dir_flat.length()	# Khoảng cách từ ship đến target trên mặt phẳng XZ
+	var radius_xz: float = minf(radius_xz_raw, max_radius)	# Bán kính thực tế của quạt ngang (bị clamp bởi max_radius)
+
+	if radius_xz > 0.1:
+		dir_flat = dir_flat.normalized()
+		var center_tip: Vector3 = origin_flat + dir_flat * radius_xz
+
+		# === Tia trung tâm + cánh quạt ngang (XZ) ===
+		DebugDraw3D.draw_line(origin_flat, center_tip, col_h)
+		var left_tip:  Vector3 = origin_flat + dir_flat.rotated(Vector3.UP,  half_angle_h) * radius_xz
+		var right_tip: Vector3 = origin_flat + dir_flat.rotated(Vector3.UP, -half_angle_h) * radius_xz
+		DebugDraw3D.draw_line(origin_flat, left_tip,  col_h)
+		DebugDraw3D.draw_line(origin_flat, right_tip, col_h)
+
+		# Cung tròn quạt ngang
+		var arc_pts := PackedVector3Array()
+		for i in range(arc_steps + 1):
+			var ang: float = lerpf(-half_angle_h, half_angle_h, float(i) / float(arc_steps))
+			arc_pts.append(origin_flat + dir_flat.rotated(Vector3.UP, ang) * radius_xz)
+		DebugDraw3D.draw_line_path(arc_pts, col_h)
+
+		# === Tia 3D đến target (giới hạn dọc) ===
+		var y_offset: float    = shift_target_pos.y - ship_position.y
+		var y_limit: float     = tan(half_angle_v) * radius_xz
+		var y_clamped: float   = sign(y_offset) * minf(abs(y_offset), y_limit)
+		var shift_tip_limited: Vector3 = Vector3(center_tip.x, ship_position.y + y_clamped, center_tip.z)
+		DebugDraw3D.draw_line(ship_position, shift_tip_limited, col_v)
+
+		# Tia tới target thực tế (dù có bị clamp hay không)
+		var shift_tip_actual: Vector3 = Vector3(center_tip.x, shift_target_pos.y, center_tip.z)
+		DebugDraw3D.draw_line(center_tip, shift_tip_actual, col_actual)
+
+		# === Cánh quạt dọc (1 cạnh cố định theo XZ, 1 cạnh mở theo offset Y) ===
+		var pitch_axis: Vector3   = dir_flat.cross(Vector3.UP).normalized()
+		var fixed_dir_3d: Vector3 = (center_tip - ship_position).normalized()
+		var open_angle: float     = atan2(y_clamped, radius_xz)
+		var open_tip: Vector3     = ship_position + fixed_dir_3d.rotated(pitch_axis, open_angle) * radius_xz
+		DebugDraw3D.draw_line(ship_position, open_tip, col_v)
+
+		# Cung tròn quạt dọc
+		if abs(open_angle) > 0.0001:
+			var v_arc_steps := maxi(2, int(round(float(arc_steps) * abs(open_angle) / half_angle_v)))
+			var v_arc_pts := PackedVector3Array()
+			for i in range(v_arc_steps + 1):
+				var t: float = float(i) / float(v_arc_steps)
+				var ang: float = lerpf(0.0, open_angle, t)
+				v_arc_pts.append(ship_position + fixed_dir_3d.rotated(pitch_axis, ang) * radius_xz)
+			DebugDraw3D.draw_line_path(v_arc_pts, col_v)
+
+	else:
+		# Hover ngay trên ship (radius_xz ≈ 0): vẽ indicator dọc thẳng đứng
+		var y_offset_direct: float = shift_target_pos.y - ship_position.y
+		if abs(y_offset_direct) > 0.05:
+			var tip_direct: Vector3 = ship_position + Vector3.UP * y_offset_direct
+			DebugDraw3D.draw_line(ship_position, tip_direct, col_v)
+			# Dấu + nhỏ ở đầu mút
+			var perp: float = 0.5
+			DebugDraw3D.draw_line(tip_direct + Vector3(-perp, 0, 0), tip_direct + Vector3(perp, 0, 0), col_v)
+			DebugDraw3D.draw_line(tip_direct + Vector3(0, 0, -perp), tip_direct + Vector3(0, 0, perp), col_v)
+
+	# === Vòng tròn giới hạn shift_max_radius ===
+	var circle_steps := 36
+	var limit_color  := Color.ORANGE_RED if radius_xz_raw > max_radius else Color(1.0, 0.5, 0.0, 0.6)
+	var circle_pts := PackedVector3Array()
+	for i in range(circle_steps + 1):
+		var a: float = TAU * float(i) / float(circle_steps)
+		circle_pts.append(origin_flat + Vector3(cos(a), 0.0, sin(a)) * max_radius)
+	DebugDraw3D.draw_line_path(circle_pts, limit_color)
+
+
+## Rebuild ArrayMesh fill cho cánh quạt shift – chỉ gọi khi dirty (ship/target đổi vị trí)
+func _rebuild_shift_fill_mesh(ship_position: Vector3, shift_target_pos: Vector3) -> void:
+	var am := debug_fill_mesh.mesh as ArrayMesh
+	am.clear_surfaces()
+
+	var half_angle_h: float = deg_to_rad(20.0)
+	var half_angle_v: float = deg_to_rad(60.0)
+	var arc_steps    := 24
+	var max_radius: float   = maxf(0.1, shift_max_radius)
+
+	var origin_flat := ship_position
+	var target_flat := Vector3(shift_target_pos.x, ship_position.y, shift_target_pos.z)
+	var dir_flat    := target_flat - origin_flat
+	var radius_xz: float = minf(dir_flat.length(), max_radius)
+
+	if radius_xz <= 0.1:
+		return
+
+	dir_flat = dir_flat.normalized()
+	var center_tip: Vector3 = origin_flat + dir_flat * radius_xz
+
+	var verts  := PackedVector3Array()
+	var colors := PackedColorArray()
+
+	# Màu fill matrix green bán trong suốt
+	var fill_h := Color(0.18, 0.97, 0.38, 0.13)   # Quạt ngang – xanh matrix mờ
+	var fill_v := Color(0.4,  1.0,  0.55, 0.20)   # Quạt dọc   – xanh matrix đậm hơn
+
+	# === Fill cánh quạt ngang (XZ) – pie slice trên mặt phẳng ngang ===
+	for i in range(arc_steps):
+		var ang0: float = lerpf(-half_angle_h, half_angle_h, float(i)     / float(arc_steps))
+		var ang1: float = lerpf(-half_angle_h, half_angle_h, float(i + 1) / float(arc_steps))
+		var p0: Vector3 = origin_flat + dir_flat.rotated(Vector3.UP, ang0) * radius_xz
+		var p1: Vector3 = origin_flat + dir_flat.rotated(Vector3.UP, ang1) * radius_xz
+		verts.append(origin_flat); colors.append(fill_h)
+		verts.append(p0);          colors.append(fill_h)
+		verts.append(p1);          colors.append(fill_h)
+
+	# === Fill cánh quạt dọc – pie slice trong mặt phẳng dọc theo hướng bay ===
+	var y_offset: float   = shift_target_pos.y - ship_position.y
+	var y_limit: float    = tan(half_angle_v) * radius_xz
+	var y_clamped: float  = sign(y_offset) * minf(abs(y_offset), y_limit)
+	var open_angle: float = atan2(y_clamped, radius_xz)
+	var abs_open: float   = abs(open_angle)
+
+	if abs_open > 0.0001:
+		var pitch_axis: Vector3   = dir_flat.cross(Vector3.UP).normalized()
+		var fixed_dir_3d: Vector3 = (center_tip - ship_position).normalized()
+		var step_count: int = maxi(2, int(round(float(arc_steps) * abs_open / half_angle_v)))
+
+		for i in range(step_count):
+			var t0: float   = float(i)     / float(step_count)
+			var t1: float   = float(i + 1) / float(step_count)
+			var ang0: float = lerpf(0.0, open_angle, t0)
+			var ang1: float = lerpf(0.0, open_angle, t1)
+			var p0: Vector3 = ship_position + fixed_dir_3d.rotated(pitch_axis, ang0) * radius_xz
+			var p1: Vector3 = ship_position + fixed_dir_3d.rotated(pitch_axis, ang1) * radius_xz
+			verts.append(ship_position); colors.append(fill_v)
+			verts.append(p0);            colors.append(fill_v)
+			verts.append(p1);            colors.append(fill_v)
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_COLOR]  = colors
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)

@@ -22,6 +22,9 @@ func _ready() -> void:
 	#call_deferred("add_child", target_marker)
 
 func shoot_ray_3d(camera_3d: Camera3D, character_body_3d: Node3D, ray_length: float = 2000) -> Variant:
+	if camera_3d == null:
+		return null
+
 	# Lấy vị trí chuột trong view hiện tại
 	var mouse_position = get_viewport().get_mouse_position()
 	

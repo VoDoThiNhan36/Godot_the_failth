@@ -7,8 +7,8 @@
 script = ExtResource("2_5bro4")
 acceleration = 100.0
 move_speed = 18.0
-min_camera_zoom = 0.0
-max_camera_zoom = 0.0
+min_zoom = 0.0
+max_zoom = 0.0
 zoom_step = 1.0
 min_vertical_angle = -1.5707963267948966
 max_vertical_angle = 1.5707963267948966
