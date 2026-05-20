@@ -54,32 +54,32 @@ var ship_movement_waypoints: Array[Movement_Waypoint] = []  # Danh sách waypoin
 var current_waypoint: Movement_Waypoint = null       # Waypoint đang bay tới
 var is_at_current_waypoint_threshold := false        # Flag đã vào vùng ngưỡng đích
 
-# For shift direction move
-@export var shift_max_radius := 20.0		# Bán kính tối đa cho phép của shift waypoint tính từ ship
-enum InputShiftState {NONE, DRAG_MOUSE_AND_OFFSET, CHANGE_DIRECTION}
-var current_shift_input_state: InputShiftState = InputShiftState.NONE
-var shift_input_delay_timer := 0.0
-var shift_target_position := Vector3.ZERO
-var shift_target_distance := 10.0
-
 # ============================== STATE ======================================
 # Player state
 enum PlayerState { IDLE, MOVE }
 enum ShipSteeringMode { CONTEXT, FAJEN_WARREN }
-enum InputMovingState {IDLE, SEQUENCE_MOVE, SHIFT_DIRECTION, HOLD_WAYPOINT, DRAG_CHANGE_DIRECTION}
+enum InputMovingState {IDLE, SEQUENCE_MOVE, SHIFT_DIRECTION}
 var current_state: PlayerState
 var current_moving_mode: InputMovingState
 
 # Input state
 enum FlightInputState { IDLE, SEQUENCE_MOVE, SHIFT_MOVE, FACING_HOLD, FACING_DRAG }
 var current_input_state: FlightInputState = FlightInputState.IDLE
+var current_input_inner_state: Variant = null
+var input_delay_timer := 0.0	# Bộ đếm thời gian để ngắ thao tác một nút giống nhau giữa 2 state
+var input_hold_timer := 0.0		# Bộ đếm thời gian để bắt đầu chỉnh hướng khi giữ chuột, chỉ dùng cho SEQUENCE_MOVE
+var input_hold_threshold := 0.2		# Ngưỡng thời gian (s) để phân biệt thao tác nhanh và hold
+var mouse_direction_accumulated := Vector2.ZERO		# Vector tích lũy hướng di chuột để xác định hướng chỉnh sửa
 
-var _facing_drag_threshold  := 12.0				# Khoảng cách di chuột tối thiểu để bắt đầu chỉnh hướng khi đang hold waypoint
-var _facing_drag_accumulated := 0.0				# Khoảng cách di chuột tích lũy được khi đang hold waypoint
-var _facing_dir_accum       := Vector2.ZERO		# Vector tích lũy hướng di chuột để xác định hướng chỉnh sửa
-var _hold_timer             := 0.0				# Bộ đếm thời gian để phân biệt click nhanh và hold khi nhấn nút sequence move
-var _hold_threshold         := 0.2				# Ngưỡng thời gian (s) để phân biệt click nhanh và hold khi nhấn nút sequence move
-var _pending_click_pos      := Vector3.ZERO		# Vị trí click chuột được raycast từ camera, dùng để tạo waypoint khi thả chuột sau hold hoặc click nhanh
+# For sequence move
+enum SequenceMoveState {NONE, HOLD_MOUSE, CHANGE_DIRECTION}
+var sequence_target_position := Vector3.ZERO	# Vị trí click chuột được raycast từ camera, dùng để tạo waypoint khi thả chuột sau hold hoặc click nhanh
+
+# For shift direction move
+@export var shift_max_radius := 20.0		# Bán kính tối đa cho phép của shift waypoint tính từ ship
+enum InputShiftState {NONE, DRAG_MOUSE_AND_OFFSET, CHANGE_DIRECTION}
+var shift_target_position := Vector3.ZERO
+var shift_target_distance := 10.0
 
 # ============================== DEBUG ======================================
 
@@ -211,13 +211,10 @@ func process_flight_input(delta: float) -> void:
 	match current_input_state:
 		FlightInputState.SEQUENCE_MOVE:
 			# Tích lũy thời gian hold khi đang giữ nút sequence move, nếu đủ thời gian thì chuyển sang state FACING_HOLD
-			_hold_timer += delta
-			# Kiểm tra, nếu đang hold thì chuyển state sang FACING_HOLD để chuẩn bị chỉnh hướng
-			if _hold_timer >= _hold_threshold:
-				_change_flight_state(FlightInputState.FACING_HOLD)
+			input_hold_timer += delta
 		
 		FlightInputState.SHIFT_MOVE:
-			if current_shift_input_state == InputShiftState.DRAG_MOUSE_AND_OFFSET:
+			if current_input_inner_state == InputShiftState.DRAG_MOUSE_AND_OFFSET:
 				# Set shift target position liên tục theo vị trí chuột
 				var mouse_hover_position = get_mouse_hover_position()
 				if mouse_hover_position == null:
@@ -235,6 +232,10 @@ func process_flight_input(delta: float) -> void:
 				if not ship_movement_waypoints.is_empty():
 					ship_movement_waypoints.back().position = shift_target_position
 					ship_movement_waypoints.back().point_marker.global_position = shift_target_position
+			
+			elif current_input_inner_state == InputShiftState.CHANGE_DIRECTION:
+				# Tích lũy thời gian delay để tránh chuyển state quá nhanh giữa DRAG_MOUSE_AND_OFFSET và CHANGE_DIRECTION
+				input_delay_timer += delta
 			
 			# Draw debug shift target nếu có, ẩn nếu không có
 			if shift_target_position != Vector3.ZERO:
@@ -256,10 +257,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	match current_input_state:
 		FlightInputState.IDLE:          input_state_idle(event, mouse_hover_position)
-		FlightInputState.SEQUENCE_MOVE: input_state_sequence_move(event)
+		FlightInputState.SEQUENCE_MOVE: input_state_sequence_move(event, camera_basis)
 		FlightInputState.SHIFT_MOVE:    input_state_shift_move(event, mouse_hover_position, camera_basis)
-		FlightInputState.FACING_HOLD:   input_state_facing_hold(event)
-		FlightInputState.FACING_DRAG:   input_state_facing_drag(event, camera_basis)
 
 func _change_flight_state(new_state: FlightInputState) -> void:
 	if current_input_state == new_state: return
@@ -271,13 +270,17 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 		FlightInputState.SEQUENCE_MOVE:
 			# Set state hiện tại lên Global Input
 			Global_Input.change_input_state(Global_Input.InputState.NONE)
+			# Reset shift internal state
+			current_input_inner_state = SequenceMoveState.NONE
+			input_hold_timer = 0.0
+			sequence_target_position = Vector3.ZERO
 
 		FlightInputState.SHIFT_MOVE:
 			# Set state hiện tại lên Global Input
 			Global_Input.change_input_state(Global_Input.InputState.NONE)
 			# Reset shift internal state
-			current_shift_input_state = InputShiftState.NONE
-			shift_input_delay_timer = 0.0
+			current_input_inner_state = InputShiftState.NONE
+			input_delay_timer = 0.0
 			# Tắt debug shift target khi thoát shift move
 			if debug_fill_mesh.visible:
 				debug_fill_mesh.visible = false
@@ -285,17 +288,16 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 				_dbg_ship_position = Vector3(1e9, 1e9, 1e9)
 				_dbg_shift_target  = Vector3(1e9, 1e9, 1e9)
 
-		FlightInputState.FACING_HOLD:
-			# Set state hiện tại lên Global Input
-			Global_Input.change_input_state(Global_Input.InputState.NONE)
-		
-		FlightInputState.FACING_DRAG:
-			# Set state hiện tại lên Global Input
-			Global_Input.change_input_state(Global_Input.InputState.NONE)
-
 	match new_state:
 		FlightInputState.IDLE:
 			pass
+
+		FlightInputState.SEQUENCE_MOVE:
+			# Set state hiện tại lên Global Input
+			Global_Input.change_input_state(Global_Input.InputState.SEQUENCE_MOVE)
+			# Update shift internal state
+			current_input_inner_state = SequenceMoveState.HOLD_MOUSE
+			mouse_direction_accumulated = Vector2.ZERO
 
 		FlightInputState.SHIFT_MOVE:
 			# Set state hiện tại lên Global Input
@@ -303,25 +305,11 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 			# Reset shift target position khi mới vào shift move
 			shift_target_position = Vector3.ZERO
 			# Update shift internal state
-			current_shift_input_state = InputShiftState.DRAG_MOUSE_AND_OFFSET
+			current_input_inner_state = InputShiftState.DRAG_MOUSE_AND_OFFSET
 			# Show immediate preview for shift move
 			set_arrival_facing_preview(Vector3.FORWARD, true)
-				
-		FlightInputState.SEQUENCE_MOVE:
-			# Set state hiện tại lên Global Input
-			Global_Input.change_input_state(Global_Input.InputState.SEQUENCE_MOVE)
-			# Reset timer check holding khi mới vào SEQUENCE_MOVE
-			_hold_timer = 0.0
 
-		# Reset accum khi mới vào FACING_HOLD, giữ nguyên accum khi vào FACING_DRAG để tiếp tục cộng dồn cho đến khi thả chuột
-		FlightInputState.FACING_HOLD:
-			_facing_drag_accumulated = 0.0
-			_facing_dir_accum = Vector2.ZERO
-			# Show immediate arrival-facing preview when entering facing hold
-			set_arrival_facing_preview(Vector3.FORWARD, true)
-		
-		FlightInputState.FACING_DRAG:
-			pass  # kế thừa accum từ FACING_HOLD, không reset
+	# Set state mới
 	current_input_state = new_state
 
 # Hàm xử lý Input state IDLE
@@ -334,7 +322,7 @@ func input_state_idle(event: InputEvent, mouse_hover_position: Variant) -> void:
 			return
 		# Nếu đang nhấn giữ sequence move → vào SEQUENCE_MOVE để chờ hold hoặc chỉnh hướnng
 		if Input.is_action_pressed("sequence_move"):
-			_pending_click_pos = mouse_hover_position
+			sequence_target_position = mouse_hover_position
 			_change_flight_state(FlightInputState.SEQUENCE_MOVE)
 		# Nếu không giữ sequence move → tạo waypoint và di chuyển ngay
 		else:
@@ -354,48 +342,40 @@ func input_state_idle(event: InputEvent, mouse_hover_position: Variant) -> void:
 		change_state(PlayerState.IDLE)
 
 # Hàm xử lý nút sequence move đang giữ để vào trạng thái chờ hold, nếu đủ thời gian hold sẽ vào trạng thái chỉnh hướng
-func input_state_sequence_move(event: InputEvent) -> void:
-	# Click nhanh (thả chuột trước ngưỡng hold) → tạo waypoint bình thường + IDLE
+func input_state_sequence_move(event: InputEvent, camera_basis: Basis) -> void:
+	# Nếu thả chuột ra
 	if event.is_action_released("move"):
-		move_to(_pending_click_pos, true)
-		_change_flight_state(FlightInputState.IDLE)
+		# Click nhanh → tạo waypoint ngay tại vị trí click
+		if input_hold_timer < input_hold_threshold:
+			move_to(sequence_target_position, true)
+			set_arrival_facing_preview(Vector3.ZERO, false)
+			_change_flight_state(FlightInputState.IDLE)
+			return
+		# Giữ chuột -> tạo waypoint + hướng
+		elif current_input_inner_state == SequenceMoveState.CHANGE_DIRECTION:
+			confirm_last_waypoint_arrival_facing()
+			set_arrival_facing_preview(Vector3.ZERO, false)
+			_change_flight_state(FlightInputState.IDLE)
+			return
+	
+	# Giữ đủ lâu -> chuyển state để chỉnh hướng
+	if current_input_inner_state == SequenceMoveState.HOLD_MOUSE:
+		# Nếu có di chuyển chuột khi đang hold thì ghi nhận các số liệu chỉnh hướng
+		if event is InputEventMouseMotion:
+			mouse_direction_accumulated += event.relative
 
-	# Scroll khi đang giữ sequence_move → chỉnh height
-	_handle_scroll_with_sequence_modifier(event)
-
-# Hàm xử lý nhấn giữ chuột để chỉnh hướng
-func input_state_facing_hold(event: InputEvent) -> void:
-	# Giữ đủ lâu nhưng không drag → tạo waypoint không có facing
-	if event.is_action_released("move"):
-		move_to(_pending_click_pos, true)
-		_change_flight_state(FlightInputState.IDLE)
-		return
-
-	# Drag chuột → chuyển sang FACING_DRAG
-	if event is InputEventMouseMotion:
-		_facing_drag_accumulated += event.relative.length()
-		_facing_dir_accum += event.relative
-		if _facing_drag_accumulated > _facing_drag_threshold:
-			_change_flight_state(FlightInputState.FACING_DRAG)
-
-	# Scroll khi đang giữ sequence_move → chỉnh height
-	_handle_scroll_with_sequence_modifier(event)
-
-# Hàm xử lý di chuyển chuột để chỉnh hướng khi đang giữ chuột
-func input_state_facing_drag(event: InputEvent, camera_basis: Basis) -> void:
-	# Thả chuột → xác nhận hướng và thoát về IDLE
-	if event.is_action_released("move"):
-		confirm_last_waypoint_arrival_facing()
-		set_arrival_facing_preview(Vector3.ZERO, false)
-		_change_flight_state(FlightInputState.IDLE)
-		return
-
-	# Drag chuột → cập nhật preview hướng
-	if event is InputEventMouseMotion:
-		_facing_dir_accum += event.relative
-		var preview_dir := calculate_translate_direction_from_mouse_motion(_facing_dir_accum, camera_basis)
-		if preview_dir != Vector3.ZERO:
-			set_arrival_facing_preview(preview_dir, true)
+		# Nếu giữ chuột đủ lâu → chuyển sang state chỉnh hướng
+		if input_hold_timer >= input_hold_threshold:
+			current_input_inner_state = SequenceMoveState.CHANGE_DIRECTION
+	
+	# Tính hướng và set preview
+	if current_input_inner_state == SequenceMoveState.CHANGE_DIRECTION:
+		# Drag chuột → cập nhật preview hướng
+		if event is InputEventMouseMotion:
+			mouse_direction_accumulated += event.relative
+			var preview_dir := calculate_translate_direction_from_mouse_motion(mouse_direction_accumulated, camera_basis)
+			if preview_dir != Vector3.ZERO:
+				set_arrival_facing_preview(preview_dir, true)
 
 	# Scroll khi đang giữ sequence_move → chỉnh height
 	_handle_scroll_with_sequence_modifier(event)
@@ -405,28 +385,28 @@ func input_state_facing_drag(event: InputEvent, camera_basis: Basis) -> void:
 func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, camera_basis: Basis) -> void:
 	# Nhấn chuột trái hoặc nhấn shift_move lần nữa để cancel shift move, bỏ waypoint
 	if (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed) or event.is_action_pressed("direction_shift_move"):
+		ship_movement_waypoints.pop_back().point_marker.queue_free() # Xóa marker của shift waypoint
 		set_arrival_facing_preview(Vector3.ZERO, false)
 		_change_flight_state(FlightInputState.IDLE)
 		return
 	
 	# Thay đổi độ dài + offset waypoint theo di chuyển chuột liên tục
 	# Nhấn move sẽ giữ cố định waypoint lại, chuyển sang state tiếp theo để chỉnh hướng
-	if current_shift_input_state == InputShiftState.DRAG_MOUSE_AND_OFFSET and event.is_pressed():
+	if current_input_inner_state == InputShiftState.DRAG_MOUSE_AND_OFFSET and event.is_pressed():
 		if event.is_action_pressed("move"):
-			current_shift_input_state = InputShiftState.CHANGE_DIRECTION
+			current_input_inner_state = InputShiftState.CHANGE_DIRECTION
 
 	# Drag chuột → cập nhật preview facing (dùng chung helper với FACING_DRAG)
-	if current_shift_input_state == InputShiftState.CHANGE_DIRECTION:
-		shift_input_delay_timer += get_process_delta_time()
+	if current_input_inner_state == InputShiftState.CHANGE_DIRECTION:
 		if event is InputEventMouseMotion:
-			_facing_dir_accum += event.relative
-			var preview_dir := calculate_translate_direction_from_mouse_motion(_facing_dir_accum, camera_basis)
+			mouse_direction_accumulated += event.relative
+			var preview_dir := calculate_translate_direction_from_mouse_motion(mouse_direction_accumulated, camera_basis)
 			if preview_dir != Vector3.ZERO:
 				set_arrival_facing_preview(preview_dir, true)
 
 		# Nhấn move khi đang ở CHANGE_DIRECTION sẽ xác nhận hướng và thoát về IDLE
 		# Cần check input timer để tránh 1 input move chạy ở cả 2 state CHANGE_DIRECTION và DRAG_MOUSE_AND_OFFSET gây lỗi xác nhận sớm
-		if event.is_action_pressed("move") and shift_input_delay_timer > 0.1:
+		if event.is_action_pressed("move") and input_delay_timer > 0.1:
 			confirm_last_waypoint_arrival_facing()
 			set_arrival_facing_preview(Vector3.ZERO, false)
 			_change_flight_state(FlightInputState.IDLE)
@@ -565,7 +545,9 @@ func _process(_delta: float) -> void:
 	rich_text_label_2.text = \
 		"Ship state			: "       + str(current_state) + \
 		"\nMoving state	: "       + str(current_moving_mode) + \
-		"\nInput state		: "       + str(current_input_state)
+		"\nInput state		: "       + str(current_input_state) + \
+		"\nInput inner state: "       + str(current_input_inner_state) + \
+		"\nDirection preview active: " + str(arrival_facing_preview_active)
 
 func _physics_process(delta: float) -> void:
 	match current_state:

@@ -59,11 +59,12 @@ offset_bottom = 644.0
 bbcode_enabled = true
 
 [node name="RichTextLabel2" type="RichTextLabel" parent="."]
-offset_left = 853.0
-offset_top = 3.0
-offset_right = 1150.0
-offset_bottom = 460.0
+offset_left = 842.0
+offset_top = 1.0
+offset_right = 1111.0
+offset_bottom = 458.0
 bbcode_enabled = true
+tab_size = 0
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.7084684, 0)
