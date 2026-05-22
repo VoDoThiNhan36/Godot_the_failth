@@ -183,7 +183,8 @@ func adjust_waypoint_target_height(offset: float) -> void:
 		current_target_height_offset = current_target_position.y - global_position.y
 				
 func adjust_shift_target_height(offset: float) -> void:
-	var shift_waypoint = ship_movement_waypoints.back()	# Shift move luôn có 1 waypoint duy nhất, nên chắc chắn back() sẽ trả về đúng waypoint cần chỉnh
+	# Shift move luôn có 1 waypoint duy nhất, nên chắc chắn back() sẽ trả về đúng waypoint cần chỉnh
+	var shift_waypoint = ship_movement_waypoints.back()	if ship_movement_waypoints.size() > 0 else current_waypoint
 	current_target_height_offset += offset
 	current_target_height_offset = clamp(current_target_height_offset, -30.0, 30.0) # Giới hạn offset để tránh lỗi khi scroll quá nhiều
 	shift_waypoint.position.y = global_position.y + current_target_height_offset
@@ -410,6 +411,10 @@ func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, c
 			confirm_last_waypoint_arrival_facing()
 			set_arrival_facing_preview(Vector3.ZERO, false)
 			_change_flight_state(FlightInputState.IDLE)
+			# Di chuyển ship nếu ship hiện không di chuyển
+			if current_state == PlayerState.IDLE:
+				load_next_waypoint()
+				change_state(PlayerState.MOVE)
 			return
 
 	# Scroll → chỉnh height, không cần modifier
@@ -630,10 +635,11 @@ func _integrate_movement(state: PhysicsDirectBodyState3D, delta: float) -> void:
 
 	# Nếu đã vào vùng blend_arrival_distance nhưng chưa vào arrival_radius → bắt đầu chuyển hướng về hướng ban đầu
 	# Tránh tình trạng ship đổi hướng vô hạn khi đến gần đích mà vẫn chưa vào radius
-	elif distance_to_target > arrival_radius and  ship_movement_waypoints.size() == 0:
+	elif distance_to_target > arrival_radius and ship_movement_waypoints.size() == 0:
+		print("Blending direction, distance to target: ", distance_to_target)
 		# Chuyển direction sang hướng ban đầu thay vì hướng từ ship đến target
 		var blend_weight = (distance_to_target - blend_arrival_distance) / blend_arrival_distance
-		blend_weight = clamp(blend_weight, 0.8, 1.0)
+		blend_weight = clamp(blend_weight, 0.2, 1.0)
 		
 		# Slerp giữa hướng đích đến và hướng click chuột ban đầu
 		current_target_direction = direction_to_target.slerp(current_waypoint.direction, blend_weight).normalized()
@@ -641,8 +647,9 @@ func _integrate_movement(state: PhysicsDirectBodyState3D, delta: float) -> void:
 
 	# Kiểm tra đã đến đích
 	else:
-		# Đến waypoint → load waypoint tiếp theo nếu có, nếu không thì về IDLE
-		if ship_movement_waypoints.size() > 0:
+		print("Arrived at target, distance: ", distance_to_target)
+		# Đến waypoint → load waypoint tiếp theo nếu có, nếu không thì về IDLE (trừ trường hợp đang shift direction move)
+		if ship_movement_waypoints.size() > 0 and current_input_state != InputMovingState.SHIFT_DIRECTION:
 			load_next_waypoint()
 		# Nếu không còn waypoint nào thì về IDLE
 		else:
@@ -933,7 +940,7 @@ func clear_all_waypoints() -> void:
 
 # Hàm load waypoint tiếp theo từ hàng đợi
 func load_next_waypoint() -> void:
-	if ship_movement_waypoints.size() > 0:
+	if ship_movement_waypoints.size() > 0 and current_input_state != InputMovingState.SHIFT_DIRECTION:
 		# 1. Xóa marker waypoint hiện tại
 		if current_waypoint and is_instance_valid(current_waypoint.point_marker):
 			current_waypoint.point_marker.queue_free()
