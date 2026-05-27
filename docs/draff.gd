@@ -6,8 +6,8 @@ extends RigidBody3D
 @export var linear_accel_time  		:= 5.0    	# Thời gian đạt max_thrust_force từ đứng yên (s)
 @export var max_thrust_force   		:= 100.0  	# Lực đẩy tối đa (N)
 @export var linear_damp_value  		:= 1.0    	# Cản tịnh tiến
-@export var arrival_radius     		:= 0.5    	# Khoảng cách sai số đến đích (m)
-@export var blend_arrival_distance 	:= 2.0    	# Khoảng cách bắt đầu chuyển hướng tới hướng gốc
+@export var arrival_radius     		:= 2.0    	# Khoảng cách sai số đến đích (m)
+@export var blend_arrival_distance 	:= 5.0    	# Khoảng cách bắt đầu chuyển hướng tới hướng gốc
 @export var lateral_damp_value   	:= 5.0	  	# Hệ số giảm chấn cho vận tốc ngang, giúp tàu không bị trượt quá đà
 @export var shift_lateral_damp_multiplier := 0.0	# Hệ số giảm chấn cho vận tốc ngang khi thực hiện SHIFT move (0 = giữ nguyên vận tốc ngang)
 var linear_power_to_mass_ratio 		:= 0.0			# Tỉ số giữa lực đẩy tối đa và khối lượng, multiply cho engine và mass khác nhau
@@ -664,7 +664,7 @@ func compute_sequence_move_target_direction(state: PhysicsDirectBodyState3D, del
 
 	# Nếu đã vào vùng blend_arrival_distance nhưng chưa vào arrival_radius → bắt đầu chuyển hướng về hướng ban đầu
 	# Tránh tình trạng ship đổi hướng vô hạn khi đến gần đích mà vẫn chưa vào radius
-	elif distance_to_target > arrival_radius and ship_movement_waypoints.size() == 0:
+	elif distance_to_target > arrival_radius and ship_movement_waypoints.size() == 0 and not is_at_current_waypoint_threshold:
 		# Chuyển direction sang hướng ban đầu thay vì hướng từ ship đến target
 		var blend_weight = (distance_to_target - blend_arrival_distance) / blend_arrival_distance
 		blend_weight = clamp(blend_weight, 0.2, 1.0)
@@ -676,12 +676,13 @@ func compute_sequence_move_target_direction(state: PhysicsDirectBodyState3D, del
 	# Kiểm tra đã đến đích
 	else:
 		# Đến waypoint → load waypoint tiếp theo nếu có, nếu không thì về IDLE (trừ trường hợp đang shift direction move)
+		is_at_current_waypoint_threshold = true
 		if ship_movement_waypoints.size() > 0 and current_input_state != InputMovingState.SHIFT_DIRECTION:
 			load_next_waypoint()
 		# Nếu không còn waypoint nào thì về IDLE
 		else:
 			# Trả về INDLE
-			if current_waypoint and is_instance_valid(current_waypoint.point_marker):
+			if is_instance_valid(current_waypoint.point_marker):
 				current_waypoint.point_marker.queue_free()
 
 			# Giữ hướng ship về phương ngang mặt đất khi về IDLE
@@ -702,50 +703,68 @@ func compute_sequence_move_target_direction(state: PhysicsDirectBodyState3D, del
 func compute_shift_move_target_direction(state: PhysicsDirectBodyState3D, delta: float) -> void:
 	var distance_to_target := state.transform.origin.distance_to(current_target_position)
 	var direction_to_target := state.transform.origin.direction_to(current_target_position)
-	var arrival_facing_smoothed_y := 0.0
 
 	_dbg_distance = distance_to_target
 
-	# Nếu còn xa đích → hướng về target trực tiếp
-	if distance_to_target > arrival_radius:
-		# Set hướng từ vị trí hiện tại đến target làm hướng di chuyển
-		current_target_direction = direction_to_target
-
-		if distance_to_target > arrival_radius * 10.0 and is_at_current_shift_waypoint_threshold != true:
-			is_at_current_shift_waypoint_threshold = false
-			rotation_desired_direction = current_target_direction
-		else:
-			is_at_current_shift_waypoint_threshold = true
-			rotation_desired_direction = current_waypoint.arrival_facing
-			arrival_facing_smoothed_y = lerp(current_waypoint.arrival_facing.y, 0.0, 0.5 * delta)
-		
-		# Debug
-		_dbg_direction = current_target_direction
-
-	# Kiểm tra đã đến đích
-	elif distance_to_target <= arrival_radius:
-		# Đến waypoint → load waypoint tiếp theo nếu có, nếu không thì về IDLE (trừ trường hợp đang shift direction move)
-		if ship_movement_waypoints.size() > 0 and current_input_state != InputMovingState.SHIFT_DIRECTION:
+	# ── ĐẾN ĐÍCH ───────────────────────────────────────────────────────────────
+	if distance_to_target <= arrival_radius:
+		if ship_movement_waypoints.size() > 0 and current_moving_mode != InputMovingState.SHIFT_DIRECTION:
 			load_next_waypoint()
-		# Nếu không còn waypoint nào thì về IDLE
 		else:
-			# Trả về INDLE
-			if current_waypoint and is_instance_valid(current_waypoint.point_marker):
-				current_waypoint.point_marker.queue_free()
+			# Lưu arrival_facing trước khi null waypoint để tránh crash
+			var final_facing := Vector3.ZERO
+			if current_waypoint:
+				final_facing = Vector3(current_waypoint.arrival_facing.x, 0.0, current_waypoint.arrival_facing.z)
+				
+				# Xóa marker của waypoint cũ nếu còn tồn tại
+				if is_instance_valid(current_waypoint.point_marker):
+					current_waypoint.point_marker.queue_free()
 
-			# Giữ hướng ship về phương ngang mặt đất khi về IDLE
-			current_target_direction = Vector3(current_waypoint.arrival_facing.x, arrival_facing_smoothed_y, current_waypoint.arrival_facing.z)
 			current_waypoint = null
-
-			# Set hướng mà ship sẽ hướng tới để update_rotation xử lý xoay
-			rotation_desired_direction = current_target_direction
+			current_target_direction  = final_facing
+			rotation_desired_direction = final_facing
 			is_at_current_shift_waypoint_threshold = false
-
-			_dbg_direction = current_target_direction
-   
+			_dbg_direction = final_facing
 			change_state(PlayerState.IDLE)
-		
-	# Tính thrust dựa trên alignment
+		return
+
+	# ── CÒN XA ĐÍCH ────────────────────────────────────────────────────────────
+	current_target_direction = direction_to_target
+
+	# Chuẩn hóa arrival_facing về mặt phẳng ngang (tàu không pitch khi đứng yên)
+	var arrival_flat := Vector3(current_waypoint.arrival_facing.x, 0.0, current_waypoint.arrival_facing.z)
+
+	# ── TÍNH QUÃNG ĐƯỜNG CẦN BẮT ĐẦU XOAY ────────────────────────────────────
+	# Góc cần xoay từ direction_to_target → arrival_facing
+	var angle_to_facing := direction_to_target.angle_to(arrival_flat)
+
+	# Vận tốc góc tối đa thực tế (giống cap trong update_rotation)
+	var effective_omega_max := max_angular_speed * rotation_power_to_mass_ratio
+
+	# Thời gian cần để hoàn thành xoay (ω = const = max)
+	var time_to_rotate: float = angle_to_facing / max(effective_omega_max, 0.0001)
+
+	# Quãng đường tàu sẽ đi trong thời gian xoay đó (dùng vận tốc hiện tại, nhân buffer 1.5x)
+	var linear_speed := state.linear_velocity.length()
+	var rotate_start_dist: float = linear_speed * time_to_rotate * 1.5
+	rotate_start_dist = max(rotate_start_dist, arrival_radius * 3.0)  # Tối thiểu 3× radius
+
+	# ── BLEND direction_to_target → arrival_facing ─────────────────────────────
+	var blend_t := 0.0
+	if distance_to_target <= rotate_start_dist:
+		# 0 = đang ở điểm bắt đầu xoay, 1 = đã đến đích
+		blend_t = clamp(1.0 - distance_to_target / rotate_start_dist, 0.0, 1.0)
+		# Ease-in-out: bắt đầu chậm → giữa nhanh → gần đích giữ nguyên
+		blend_t = blend_t * blend_t * (3.0 - 2.0 * blend_t)
+		is_at_current_shift_waypoint_threshold = true
+	else:
+		is_at_current_shift_waypoint_threshold = false
+
+	rotation_desired_direction = direction_to_target.slerp(arrival_flat, blend_t).normalized()
+	_dbg_direction = rotation_desired_direction
+
+	# ── THRUST ─────────────────────────────────────────────────────────────────
+	# Lực đẩy luôn hướng về đích (direction_to_target) để ship không đứng yên khi xoay
 	if current_waypoint:
 		compute_shift_move_thrust_control(state, current_target_direction, distance_to_target, delta)
 		
@@ -826,7 +845,7 @@ func compute_sequence_move_lateral_damping(state: PhysicsDirectBodyState3D, delt
 
 
 ## Triệt tiêu trượt ngang và damping khi IDLE
-func compute_shift_move_lateral_damping(state: PhysicsDirectBodyState3D, delta: float) -> void:
+func compute_shift_move_lateral_damping(state: PhysicsDirectBodyState3D, _delta: float) -> void:
 	# Tách vận tốc thành forward + lateral
 	var current_heading := -state.transform.basis.z
 	var forward_speed := state.linear_velocity.dot(current_heading)
@@ -1069,6 +1088,9 @@ func load_next_waypoint() -> void:
 		current_target_position  = next_target_movement.position
 		current_target_direction = next_target_movement.direction
 		current_ship_origin_position = -global_transform.basis.z if global_position != Vector3.ZERO else Vector3.FORWARD
+		
+		# Set lại flag đến waypoint mới
+		is_at_current_waypoint_threshold = false
 		
 	else:
 		current_waypoint = null

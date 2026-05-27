@@ -21,12 +21,12 @@ can_sleep = false
 freeze_mode = 1
 script = ExtResource("1_y8gn2")
 max_thrust_force = 500.0
-blend_arrival_distance = 10.0
 max_turn_torque = 250.0
 rotation_d = 6.0
 rotation_start_delay = 1.0
 angular_damp_pitch = 5.0
 angular_stable_power_ratio = 0.2
+shift_max_radius = 5.0
 
 [node name="Ship_part" parent="RigidBody3D" instance=ExtResource("1_l3rv8")]
 
