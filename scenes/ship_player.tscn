@@ -24,6 +24,7 @@ max_thrust_force = 500.0
 max_turn_torque = 250.0
 rotation_d = 6.0
 rotation_start_delay = 1.0
+rotation_delay_threshold = 90.0
 angular_damp_pitch = 5.0
 angular_stable_power_ratio = 0.2
 shift_max_radius = 5.0

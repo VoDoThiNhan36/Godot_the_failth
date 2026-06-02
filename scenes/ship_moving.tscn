@@ -66,3 +66,4 @@ mesh = SubResource("BoxMesh_aqk2v")
 [node name="Ship_Player" parent="." instance=ExtResource("1_8br57")]
 
 [node name="Camera_Free" parent="." instance=ExtResource("2_vtupg")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5.6851406, 8.567097)
