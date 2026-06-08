@@ -26,7 +26,7 @@ var rotation_desired_direction 		:= Vector3.ZERO	# Hướng mong muốn để xo
 @export var max_turn_torque_rcs     := 50.0    	# Khả năng tạo lực xoay của RCS (N*m)
 @export var rotation_p              := 2.0		# Hệ số phản hồi góc (Rotation Proportional Gain)
 @export var rotation_d              := 2.0   	# Hệ số phanh góc (Rotation Derivative/Damping) khi đang xoay
-@export var angular_damp_value   	:= 5.0		# Hệ số giảm chấn cho vận tốc góc, giúp tàu không bị xoay quá đà và có cảm giác quán tính khi đổi hướng
+@export var angular_damp_value   	:= 1.0		# Hệ số giảm chấn cho vận tốc góc, giúp tàu không bị xoay quá đà và có cảm giác quán tính khi đổi hướng
 @export var rotation_start_delay    := 0.1   	# Thời gian chờ (s) trước khi bắt đầu xoay khi phát hiện waypoint mới góc lệch lớn
 @export var rotation_delay_threshold := 60.0  	# Góc lệch tối thiểu (độ) để kích hoạt thời gian chờ
 @export var rotation_fine_zone      := 1.0   	# Vùng góc gần đích (độ): khi trong vùng này, tốc độ xoay giảm dần về 0 mượt hơn
@@ -147,9 +147,7 @@ func _ready() -> void:
 	min_distance_diagonally_move = ship_length + linear_power_to_mass_ratio * (rotation_power_to_mass_ratio / max_pitch_angle)
 
 	# Fajen steering setup — đồng bộ params + steering tự quản lý momentum
-	fajen_steering = Steering_Fajen_Warrent.new()
-	fajen_steering.fajen_angular_damping = 1.0               # Giống draff angular_damping
-	fajen_steering.fajen_max_turn_speed  = max_angular_speed # Đồng bộ với ship
+	fajen_steering = Steering_Fajen_Warrent.new(max_angular_speed, angular_damp_value)
 	add_child(fajen_steering)
 
 	# Thiết lập MeshInstance3D cho fill mesh (ArrayMesh cached, chỉ rebuild khi dirty)

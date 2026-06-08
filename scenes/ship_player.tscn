@@ -14,7 +14,7 @@ height = 5.22243
 [node name="Ship_Player" type="Node"]
 
 [node name="RigidBody3D" type="RigidBody3D" parent="."]
-mass = 500.0
+mass = 100.0
 physics_material_override = SubResource("PhysicsMaterial_y8gn2")
 gravity_scale = 0.0
 can_sleep = false

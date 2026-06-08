@@ -12,7 +12,7 @@ class_name Steering_Fajen_Warrent
 @export var fajen_c4 := 0.2
 @export var fajen_noise := 0.2
 @export var fajen_angular_damping := 1.0	# Damping cho fajen_angular_velocity (giống draff angular_damping)
-@export var fajen_max_turn_speed  := 1.0	# Tốc độ xoay tối đa (giống draff max_turn_speed)
+@export var fajen_max_angular_speed  := 1.0	# Tốc độ xoay tối đa (giống draff max_turn_speed)
 var nearby_obstacles: Array[Node3D] = []       # Danh sách obstacle trong vùng detect
 # fajen_angular_velocity GIỮ NGUYÊN vì Fajen tính pitch/yaw riêng trong ship-space
 # Không thể thay bằng angular_velocity Vector3 của RigidBody3D (world-space, 3 trục)
@@ -33,8 +33,9 @@ func set_fajen_angular_velocity(vel: Vector2) -> void:
 
 # =============================== DEFAULT FUNCTIONS ==============================
 
-func _init() -> void:
-	pass
+func _init(max_angular_speed: float, angular_damping: float) -> void:
+	fajen_max_angular_speed = max_angular_speed
+	fajen_angular_damping = angular_damping
 
 # Hàm khởi tạo — setup RigidBody3D settings + Fajen area + debug meshes
 func _ready() -> void:
@@ -228,8 +229,8 @@ func compute_fajen_angular_acceleration(ship: Node3D, ship_heading_vector: Vecto
 	# Damping mọi frame
 	fajen_angular_velocity = fajen_angular_velocity.lerp(Vector2.ZERO, fajen_angular_damping * delta)
 	# Clamp max speed
-	if fajen_angular_velocity.length() > fajen_max_turn_speed:
-		fajen_angular_velocity = fajen_angular_velocity.normalized() * fajen_max_turn_speed
+	if fajen_angular_velocity.length() > fajen_max_angular_speed:
+		fajen_angular_velocity = fajen_angular_velocity.normalized() * fajen_max_angular_speed
 
 	return {
 		# --- Giá trị chính dùng cho steering ---
