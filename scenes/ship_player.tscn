@@ -20,8 +20,6 @@ gravity_scale = 0.0
 can_sleep = false
 freeze_mode = 1
 script = ExtResource("1_y8gn2")
-max_thrust_force = 500.0
-max_turn_torque = 250.0
 rotation_d = 6.0
 rotation_start_delay = 1.0
 rotation_delay_threshold = 90.0
@@ -62,10 +60,19 @@ offset_bottom = 644.0
 bbcode_enabled = true
 
 [node name="RichTextLabel2" type="RichTextLabel" parent="."]
+visible = false
 offset_left = 842.0
 offset_top = 1.0
 offset_right = 1111.0
-offset_bottom = 458.0
+offset_bottom = 259.0
+bbcode_enabled = true
+tab_size = 0
+
+[node name="RichTextLabel3" type="RichTextLabel" parent="."]
+offset_left = 842.0
+offset_top = 7.0
+offset_right = 1111.0
+offset_bottom = 647.0
 bbcode_enabled = true
 tab_size = 0
 

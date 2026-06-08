@@ -67,3 +67,15 @@ mesh = SubResource("BoxMesh_aqk2v")
 
 [node name="Camera_Free" parent="." instance=ExtResource("2_vtupg")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5.6851406, 8.567097)
+
+[node name="RigidBody3D2" type="RigidBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.912803, 0, -14.545026)
+collision_layer = 129
+collision_mask = 129
+gravity_scale = 0.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RigidBody3D2"]
+shape = SubResource("BoxShape3D_tlwt5")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="RigidBody3D2"]
+mesh = SubResource("BoxMesh_aqk2v")

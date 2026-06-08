@@ -431,7 +431,7 @@ func move_to(new_position: Vector3, is_sequence: bool = false) -> void:
 	else:
 		previous_position = global_position
 
-	var new_waypoint = Movement_Waypoint.new(new_position, previous_position)
+	var new_waypoint = Movement_Waypoint.new(new_position, previous_position, "sequence")
 	add_child(new_waypoint.point_marker)
 	ship_movement_waypoints.append(new_waypoint)
 

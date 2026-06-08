@@ -9,7 +9,7 @@ var point_marker: MeshInstance3D
 var type: String #["sequence", "shift", "preview"] - sequence và shift move
 
 # Init nhận vào position mới và direction của target trước đó
-func _init(new_position: Vector3, previous_position: Vector3, type: String) -> void:
+func _init(new_position: Vector3, previous_position: Vector3, type: String = "sequence") -> void:
 	self.position = new_position
 	self.direction = previous_position.direction_to(new_position).normalized()
 	self.arrival_facing = previous_position.direction_to(new_position).normalized()  # Mặc định theo direction

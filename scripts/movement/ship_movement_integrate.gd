@@ -32,7 +32,7 @@ var rotation_desired_direction 		:= Vector3.ZERO	# Hướng mong muốn để xo
 @export var rotation_fine_zone      := 1.0   	# Vùng góc gần đích (độ): khi trong vùng này, tốc độ xoay giảm dần về 0 mượt hơn
 @export var angle_change_factor 	:= 1.0		# Hệ số giảm lực xoay nếu góc quay thay đổi đột ngột
 @export var angle_fine_factor 		:= 1.0		# Hệ số giảm lực quay khi càng gần hướng đúng 
-@export var max_roll_angle         	:= 15.0		# Góc lăn tối đa (độ)
+@export var max_roll_angle         	:= 6.0		# Góc lăn tối đa (độ)
 @export var max_pitch_angle        	:= 10.0		# Góc nghiêng tối đa (độ)
 @export var angular_damp_roll      	:= 2.0		# Hệ số giảm chấn cho góc roll
 @export var angular_damp_pitch		:= 2.0		# Hệ số giảm chấn cho góc pitch
@@ -58,12 +58,16 @@ var current_waypoint: Movement_Waypoint = null       # Waypoint đang bay tới
 var is_at_current_waypoint_threshold := false        # Flag đã vào vùng ngưỡng đích
 var is_at_current_shift_waypoint_threshold := false   # Flag đã vào vùng ngưỡng đích khi đang shift move (vì shift move có thể chỉnh hướng tại chỗ nên ngưỡng đích sẽ khác)
 
+# ============================== STEERING FAJEN WARREN ======================================
+var fajen_steering: Steering_Fajen_Warrent	# Instance của Fajen steering — tự quản lý momentum nội bộ
+
 # ============================== STATE ======================================
 # Player state
 enum PlayerState { IDLE, MOVE }
-enum ShipSteeringMode { CONTEXT, FAJEN_WARREN }
+enum ShipSteeringMode { NONE, FAJEN_WARREN }
 enum InputMovingState {IDLE, SEQUENCE_MOVE, SHIFT_DIRECTION}
 var current_state: PlayerState
+var current_steering_mode: ShipSteeringMode
 var current_moving_mode: InputMovingState
 
 # Input state
@@ -72,7 +76,7 @@ var current_input_state: FlightInputState = FlightInputState.IDLE
 var current_input_inner_state: Variant = null
 var input_delay_timer := 0.0	# Bộ đếm thời gian để ngắ thao tác một nút giống nhau giữa 2 state
 var input_hold_timer := 0.0		# Bộ đếm thời gian để bắt đầu chỉnh hướng khi giữ chuột, chỉ dùng cho SEQUENCE_MOVE
-var input_hold_threshold := 0.1		# Ngưỡng thời gian (s) để phân biệt thao tác nhanh và hold
+var input_hold_threshold := 0.2		# Ngưỡng thời gian (s) để phân biệt thao tác nhanh và hold
 var mouse_direction_accumulated := Vector2.ZERO		# Vector tích lũy hướng di chuột để xác định hướng chỉnh sửa
 
 # For sequence move
@@ -112,6 +116,7 @@ var arrival_facing_preview_active := false
 
 @onready var rich_text_label: RichTextLabel = $"../RichTextLabel"
 @onready var rich_text_label_2: RichTextLabel = $"../RichTextLabel2"
+@onready var rich_text_label_3: RichTextLabel = $"../RichTextLabel3"
 
 # ============================== READY ======================================
 
@@ -119,6 +124,7 @@ func _ready() -> void:
 	# Thiết lập mouse filter để label không chặn mouse event
 	rich_text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	rich_text_label_2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rich_text_label_3.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	# Tính độ dài ship từ AABB của mesh con đầu tiên
 	var ship = self.get_child(0) as Node3D          # Node3D chứa mesh
@@ -128,6 +134,7 @@ func _ready() -> void:
 	# Set state ban đầu
 	current_state = PlayerState.IDLE
 	current_moving_mode = InputMovingState.IDLE
+	current_steering_mode = ShipSteeringMode.NONE
 	current_target_direction = -global_transform.basis.z
 	
 	# Internal setup
@@ -138,6 +145,12 @@ func _ready() -> void:
 	linear_power_to_mass_ratio = max_thrust_force / mass
 	rotation_power_to_mass_ratio = (max_turn_torque + max_turn_torque_rcs) / mass
 	min_distance_diagonally_move = ship_length + linear_power_to_mass_ratio * (rotation_power_to_mass_ratio / max_pitch_angle)
+
+	# Fajen steering setup — đồng bộ params + steering tự quản lý momentum
+	fajen_steering = Steering_Fajen_Warrent.new()
+	fajen_steering.fajen_angular_damping = 1.0               # Giống draff angular_damping
+	fajen_steering.fajen_max_turn_speed  = max_angular_speed # Đồng bộ với ship
+	add_child(fajen_steering)
 
 	# Thiết lập MeshInstance3D cho fill mesh (ArrayMesh cached, chỉ rebuild khi dirty)
 	debug_fill_mesh.top_level = true
@@ -570,7 +583,8 @@ func _process(_delta: float) -> void:
 		"\nDirection preview active: " + str(arrival_facing_preview_active) + \
 		"\nRotation start distance: " + str(snappedf(_dbg_rotation_start_dist, 0.01)) + " m" + \
 		"\nAngle to target: " + str(snappedf(_dbg_angle_to_target, 0.01)) + " rad" + \
-		"\nTime to rotate: " + str(snappedf(_dbg_time_to_rotate, 0.01)) + " s"
+		"\nTime to rotate: " + str(snappedf(_dbg_time_to_rotate, 0.01)) + " s" + \
+		"\nSteering mode: " + str(current_steering_mode)
 
 func _physics_process(delta: float) -> void:
 	match current_state:
@@ -611,6 +625,12 @@ func change_moving_state(new_state: InputMovingState) -> void:
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	var delta := state.step
 
+	# Tính các số liệu chung
+	var distance_to_target := state.transform.origin.distance_to(current_target_position)
+	var direction_to_target := state.transform.origin.direction_to(current_target_position)
+	var ship_heading := -state.transform.basis.z
+	var danger_throttle_factor = 1.0  # Hệ số giảm ga khi có obstacle nguy hiểm
+
 	# Tích lũy quãng đường
 	distance_traveled += state.transform.origin.distance_to(last_position)
 	last_position = state.transform.origin
@@ -638,11 +658,6 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 				_dbg_linear_vel = state.linear_velocity
 				
 		PlayerState.MOVE: 
-			# Tính các số liệu chung
-			var distance_to_target := state.transform.origin.distance_to(current_target_position)
-			var direction_to_target := state.transform.origin.direction_to(current_target_position)
-			var ship_heading := -state.transform.basis.z
-
 			# Xử lý di chuyển theo loại waypoint hiện tại
 			match current_waypoint.type:
 				"sequence":
@@ -657,12 +672,86 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 					# compute_shift_move_lateral_damping(state, delta)
 	
 	# Xoay để hướng tới target
-	update_rotation(state, rotation_desired_direction, delta)
+	# =========================================================
+	# STEERING: Fajen (xa) hoặc manual torque (gần)
+	# =========================================================
+	# Tính desired direction theo thuật toán steering khi distance còn xa
+	if distance_to_target > ship_length * 3.0:
+		# Set mode steering đang dùng
+		current_steering_mode = ShipSteeringMode.FAJEN_WARREN
+
+		# =========================================================
+		# FAJEN STEERING — Steering tự tích lũy nội bộ (giống draff)
+		# Chỉ gọi compute(), steering tự lo clamp/damp/clamp max,
+		# ship chỉ việc gán velocity vào state.angular_velocity
+		# =========================================================
+		var max_engine_accel := rotation_power_to_mass_ratio  # = angular_acceleration / mass
+
+		# 1. Gọi Fajen — steering tự tích lũy vào fajen_angular_velocity nội bộ
+		var fajen_result = fajen_steering.compute_fajen_angular_acceleration(
+			self, ship_heading, direction_to_target, current_target_position, delta, max_engine_accel)
+		var fajen_vel: Vector2 = fajen_steering.get_fajen_angular_velocity()  # Đã tích lũy + damp + clamp
+		var total_repulsion: float = fajen_result["repulsion_force"]
+
+		# 2. Gán trực tiếp velocity vào angular_velocity (Kinematic override)
+		var yaw_axis   := Vector3.UP
+		var pitch_axis := state.transform.basis.x.normalized()
+		state.angular_velocity = yaw_axis * fajen_vel.y + pitch_axis * fajen_vel.x
+
+		# 3. Danger throttle — giống draff: ngưỡng 5.0
+		if total_repulsion > 5.0:
+			danger_throttle_factor = clamp(1.0 - (total_repulsion / 50.0), 0.1, 1.0)
+			auto_throttle *= danger_throttle_factor
+		else:
+			danger_throttle_factor = 1.0
+		
+		# 4. Debug — hiển thị tất cả kết quả công thức Fajen
+		var obs_debug_str := ""
+		var obs_details: Array = fajen_result.get("obstacle_details", [])
+		for i in range(obs_details.size()):
+			var obs = obs_details[i]
+			obs_debug_str += "  #%d: err=%s, term=%s, dist=%.1f, r=%.1f, ko=%.1f\n" % [
+				i + 1,
+				obs["obs_error"],
+				obs["obs_term"],
+				obs["distance"],
+				obs["radius"],
+				obs["dynamic_ko"]
+			]
+		if obs_debug_str == "": obs_debug_str = "  (none)\n"
+		
+		rich_text_label_3.text = \
+			"FAJEN FORMULA\n" + \
+			"─────────────────────────\n" + \
+			"damping_term (pitch, yaw): "   + str(fajen_result["damping_term"]) + "\n" + \
+			"goal_term   (pitch, yaw): "   + str(fajen_result["goal_term"]) + "\n" + \
+			"goal_error  (pitch, yaw): "   + str(fajen_result["goal_error"]) + "\n" + \
+			"goal_weight              : "   + str(snappedf(fajen_result["goal_weight"], 0.001)) + "\n" + \
+			"distance_to_goal         : "   + str(snappedf(fajen_result["distance_to_goal"], 0.1)) + " m\n" + \
+			"noise_added              : "   + str(fajen_result["noise_added"]) + "\n" + \
+			"\nRAW → APPLIED → VELOCITY\n" + \
+			"─────────────────────────\n" + \
+			"raw_accel   (pitch, yaw): "   + str(fajen_result["angular_accel"]) + "\n" + \
+			"max_engine_accel       : "   + str(snappedf(max_engine_accel, 0.001)) + "\n" + \
+			"applied     (pitch, yaw): "   + str(fajen_result["applied_accel"]) + "\n" + \
+			"fajen_vel   (pitch, yaw): "   + str(fajen_vel) + "\n" + \
+			"\nREPULSION\n" + \
+			"─────────────────────────\n" + \
+			"total_repulsion         : "   + str(snappedf(total_repulsion, 0.001)) + "\n" + \
+			"obstacle_count          : "   + str(fajen_result["obstacle_count"]) + "\n" + \
+			"danger_throttle_factor  : "   + str(snappedf(danger_throttle_factor, 0.01)) + "\n" + \
+			"\nOBSTACLE DETAILS\n" + \
+			obs_debug_str	
+	
+	# Khoảng cách gần target, không dùng steering mà dùng manual
+	else:
+		# Set mode steering đang dùng
+		current_steering_mode = ShipSteeringMode.NONE
+		update_rotation(state, rotation_desired_direction, delta)
 
 	# Auto correct roll
 	apply_roll_clamp(state)
 	apply_pitch_clamp(state)
-	
 
 # ============================== PHYSICS HELPERS ======================================
 
@@ -1141,9 +1230,30 @@ func draw_debug_vectors(desired_direction: Vector3, fwd_vel: Vector3, lat_vel: V
 			wp_origin = ship_movement_waypoints.back().position
 		elif current_waypoint != null:
 			wp_origin = current_waypoint.position
-		wp_origin += Vector3(0, 2.0, 0)
+		wp_origin += Vector3(0, 0, 0)
 		
 		DebugDraw3D.draw_arrow(wp_origin, wp_origin + arrival_facing_preview_direction * 6.0, Color.YELLOW, 0.1)
+	
+	# Waypoint connect
+	var points: PackedVector3Array = PackedVector3Array()
+	
+	# 1. Thêm điểm đang bay tới hiện tại (nếu đang di chuyển)
+	if current_state == PlayerState.MOVE:
+		points.append(current_target_position + Vector3(0, 0.0, 0))
+	
+	# 2. Thêm các waypoint còn lại trong hàng đợi
+	for wp in ship_movement_waypoints:
+		points.append(wp.position + Vector3(0, 0.0, 0))
+		
+	# 3. Vẽ toàn bộ đường đi bằng DebugDraw3D (chỉ vẽ khi có từ 2 điểm trở lên)
+	if points.size() >= 2:
+		# Duyệt qua mảng và nối từng cặp điểm lại với nhau
+		for i in range(points.size() - 1):
+			DebugDraw3D.draw_line(points[i], points[i + 1], Color.GREEN)
+
+	elif points.size() == 1:
+		# Nếu chỉ có 1 điểm duy nhất, vẽ một vị trí nhỏ để dễ nhìn
+		DebugDraw3D.draw_position(Transform3D(Basis(), points[0]), Color.GREEN)
 
 ## Vẽ debug shift: lines (mọi frame) + fill mesh (chỉ rebuild khi dirty)
 func _draw_shift_debug(ship_position: Vector3, shift_target_pos: Vector3) -> void:

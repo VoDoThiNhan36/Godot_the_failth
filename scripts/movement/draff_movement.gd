@@ -264,6 +264,7 @@ func compute_fajen_angular_acceleration(ship_heading_vector: Vector3, target_dir
 	phi_double_dot_pitch -= goal_term_pitch
 	
 	var total_repulsion := 0.0 # Biến cộng dồn lực đẩy để tính chân ga (Throttle)
+	var obstacle_details: Array[Dictionary] = []  # Chi tiết từng obstacle để debug
 	
 	## Tính lực đẩy bbstacle repellers
 	## sum( ko * (phi - psi_o) * exp(-c3 * abs(phi - psi_o)) * exp(-c4 * do)
@@ -324,16 +325,42 @@ func compute_fajen_angular_acceleration(ship_heading_vector: Vector3, target_dir
 		
 		# Lưu lại độ lớn lực đẩy để lát bóp phanh
 		total_repulsion += Vector2(obs_term_yaw, obs_term_pitch).length()
+		# Chi tiết obstacle để debug
+		obstacle_details.append({
+			"obs_term":  Vector2(obs_term_pitch, obs_term_yaw),  # x=pitch, y=yaw
+			"obs_error": Vector2(obs_error_pitch, obs_error_yaw),
+			"distance":  distance_to_obstacle,
+			"radius":    obs_radius,
+			"dynamic_ko": dynamic_ko,
+		})
 		count += 1
 	
 	## Noise nhỏ chống deadlock
+	var noise_added := false
 	if count > 0 and current_angular_velocity.length() < 0.1 and Vector2(phi_double_dot_pitch, phi_double_dot_yaw).length() < 0.1:
 		phi_double_dot_yaw += randf_range(-fajen_noise, fajen_noise)
 		phi_double_dot_pitch += randf_range(-fajen_noise, fajen_noise)
+		noise_added = true
+
+	# Raw angular acceleration (x=pitch, y=yaw)
+	var raw_accel := Vector2(phi_double_dot_pitch, phi_double_dot_yaw)
+	# Damping term riêng: -b * phi_dot (trước goal và obstacle)
+	var damping_term := Vector2(-fajen_b * current_angular_velocity.x, -fajen_b * current_angular_velocity.y)
+	# Goal weight (exp(-c1*dg)+c2)
+	var goal_weight := exp(-0.4 * distance_to_goal) + 0.4
 		
 	return {
-		"angular_accel": Vector2(phi_double_dot_pitch, phi_double_dot_yaw), # x là pitch, y là yaw,
-		"repulsion_force": total_repulsion
+		"angular_accel":    raw_accel,                                  # Gia tốc góc thô (pitch, yaw)
+		"repulsion_force":  total_repulsion,                            # Tổng lực đẩy obstacle
+		# --- Debug ---
+		"damping_term":     damping_term,                               # -b*phi_dot (pitch, yaw)
+		"goal_term":        Vector2(goal_term_pitch, goal_term_yaw),   # Goal attraction (pitch, yaw)
+		"goal_error":       Vector2(goal_error_pitch, goal_error_yaw), # Góc lệch target (pitch, yaw)
+		"distance_to_goal": distance_to_goal,                           # Khoảng cách đến target
+		"goal_weight":      goal_weight,                                # Trọng số exp(-c1*dg)+c2
+		"obstacle_count":   count,                                      # Số obstacle đã xử lý
+		"obstacle_details": obstacle_details,                           # Chi tiết từng obstacle
+		"noise_added":      noise_added,                                # Đã thêm noise?
 	}
 
 # ---------------------- WAYPOINT + ADD MOVE -----------------------
@@ -472,7 +499,7 @@ func handle_state_move(delta: float) -> void:
 		if current_steering_mode == ShipSteeringMode.FAJEN_WARREN:
 			var fajen_result = compute_fajen_angular_acceleration(ship_heading_vector, raw_direction, fajen_angular_velocity)
 			var raw_fajen_accel: Vector2 = fajen_result["angular_accel"]
-			var total_repulsion = fajen_result["repulsion_force"]
+			var total_repulsion: float = fajen_result["repulsion_force"]
 			
 			# =========================================================
 			# 1. ĐỒNG BỘ VỚI ĐỘNG CƠ XOAY (Torque Sync)
@@ -510,6 +537,45 @@ func handle_state_move(delta: float) -> void:
 			var local_right = global_transform.basis.x.normalized()
 			global_rotate(local_right, fajen_angular_velocity.x * delta)
 			global_transform.basis = global_transform.basis.orthonormalized()
+
+			# Debug — hiển thị tất cả kết quả công thức Fajen
+			## Xây chuỗi obstacle details
+			var obs_debug_str := ""
+			var obs_details: Array = fajen_result.get("obstacle_details", [])
+			for i in range(obs_details.size()):
+				var obs = obs_details[i]
+				obs_debug_str += "  #%d: err=%s, term=%s, dist=%.1f, r=%.1f, ko=%.1f\n" % [
+					i + 1,
+					obs["obs_error"],
+					obs["obs_term"],
+					obs["distance"],
+					obs["radius"],
+					obs["dynamic_ko"]
+				]
+			if obs_debug_str == "": obs_debug_str = "  (none)\n"
+			
+			rich_text_label.text = \
+				"FAJEN (DRAFF)\n" + \
+				"─────────────────────────\n" + \
+				"damping_term (pitch, yaw): "   + str(fajen_result["damping_term"]) + "\n" + \
+				"goal_term   (pitch, yaw): "   + str(fajen_result["goal_term"]) + "\n" + \
+				"goal_error  (pitch, yaw): "   + str(fajen_result["goal_error"]) + "\n" + \
+				"goal_weight              : "   + str(snappedf(fajen_result["goal_weight"], 0.001)) + "\n" + \
+				"distance_to_goal         : "   + str(snappedf(fajen_result["distance_to_goal"], 0.1)) + " m\n" + \
+				"noise_added              : "   + str(fajen_result["noise_added"]) + "\n" + \
+				"\nRAW → APPLIED → VELOCITY\n" + \
+				"─────────────────────────\n" + \
+				"raw_accel   (pitch, yaw): "   + str(raw_fajen_accel) + "\n" + \
+				"max_engine_accel       : "   + str(snappedf(max_engine_accel, 0.001)) + " rad/s²\n" + \
+				"applied     (pitch, yaw): "   + str(Vector2(applied_accel_pitch, applied_accel_yaw)) + "\n" + \
+				"fajen_vel   (pitch, yaw): "   + str(fajen_angular_velocity) + "\n" + \
+				"\nREPULSION\n" + \
+				"─────────────────────────\n" + \
+				"total_repulsion         : "   + str(snappedf(total_repulsion, 0.001)) + "\n" + \
+				"obstacle_count          : "   + str(fajen_result["obstacle_count"]) + "\n" + \
+				"danger_throttle_factor  : "   + str(snappedf(danger_throttle_factor, 0.01)) + "\n" + \
+				"\nOBSTACLE DETAILS\n" + \
+				obs_debug_str
 	
 	# Khoảng cách gần target, không dùng steering mà dùng manual
 	else:
