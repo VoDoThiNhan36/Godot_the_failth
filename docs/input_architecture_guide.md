@@ -1,5 +1,7 @@
 # Tài liệu: Kiến trúc Centralized Input + Camera Mode + Gameplay Mode
-> Godot 4 · Project `3d_modular` · Cập nhật: 2026-05-06
+> Godot 4 · Project `3d_modular` · Cập nhật: 2026-06-23
+
+> ⚠️ **Ghi chú kiến trúc thực tế:** Từ bản refactor gần đây, `ship_movement_integrate.gd` (RigidBody3D) tự xử lý input flight qua `_unhandled_input()` thay vì scene controller. Scene controller (`ship_moving_scene.gd`) chỉ còn là shell gọi `Global_Input`. Xem các section 4, 5 để biết chi tiết.
 
 ---
 
@@ -64,45 +66,54 @@ Ví dụ:
 - gameplay vẫn là `FLIGHT`
 - nghĩa là vẫn có thể click tạo waypoint bình thường
 
-### 3.3. Sơ đồ tổng quát
+### 3.3. Sơ đồ tổng quát (thực tế hiện tại)
 
 ```text
 Input Event
    │
-   ▼
-ship_moving_scene.gd
-  _input(event)
-   ├── _input_global(event)            # luôn active
-   ├── _input_active_camera(event)     # zoom/orbit/look
-   └── route theo current_gameplay_mode
-     └── _input_flight(event)
+   ├── [1] Global_Input._input(event)          # menu, toggle mouse
+   │     └── Global_Camera.handle_input(event)  # switch cam, zoom, orbit
+   │           (bỏ qua nếu đang giữ sequence_move / direction_shift_move)
+   │
+   ├── [2] ship_moving_scene._input(event)     # shell — chỉ pass qua Global_Input
+   │
+   └── [3] ship_movement_integrate._unhandled_input(event)  ← MAIN!
+         └── FlightInputState Machine
+               ├── IDLE          → click → move_to / create_shift_waypoint
+               ├── SEQUENCE_MOVE → hold timer → click nhanh hoặc drag để set facing
+               └── SHIFT_MOVE    → drag để chỉnh vị trí → click để set facing
 
-   (gọi API xuống node gameplay)
-        ├── ship_player.move_to(...)
-        ├── ship_player.adjust_target_height(...)
-        └── ship_player.clear_all_waypoints()
-
-   (gọi API xuống camera rig active)
-     └── current_rig.handle_scene_input(event) -> bool
+   (Gọi API nội bộ trong ship — không qua scene controller)
+        ├── move_to() / create_shift_waypoint()
+        ├── adjust_waypoint_target_height() / adjust_shift_target_height()
+        ├── set_arrival_facing_preview() / confirm_last_waypoint_arrival_facing()
+        └── clear_all_waypoints()
 ```
+
+### 3.4. Lớp đồng bộ — Global_Input
+
+```
+Global_Input.InputState { NONE, SEQUENCE_MOVE, SHIFT_MOVE }
+  ↑ ship đồng bộ mỗi khi đổi FlightInputState
+  ↓
+Global_Camera.handle_input() check state để quyết định có ăn scroll/click không
+```
+
+- Khi ship vào `FlightInputState.SEQUENCE_MOVE` → set `Global_Input.InputState.SEQUENCE_MOVE`
+- Khi ship vào `FlightInputState.SHIFT_MOVE` → set `Global_Input.InputState.SHIFT_MOVE`
+- Về IDLE → set `Global_Input.InputState.NONE`
+- Camera dùng `camera_exclude_input_list` + `camera_exclude_state_list` để skip input nếu cần
 
 ---
 
-## 4. Phân vai trách nhiệm theo file
+## 4. Phân vai trách nhiệm theo file (thực tế hiện tại)
 
 ### `scenes/ship_moving_scene.gd`
 
-- Chứa `enum GameplayInputMode` và `current_gameplay_mode`.
-- Chứa input router `_input(event)`.
-- Chứa `_input_global(event)` cho input luôn bật:
-  - `ui_cancel`
-  - đổi camera
-- Chứa `_input_active_camera(event)` để chuyển event cho camera rig đang active.
-- Chứa `_input_flight(event)` cho logic điều khiển tàu:
-  - click move
-  - scroll đổi cao độ
-  - clear waypoint theo modifier
-- Chứa `_switch_gameplay_mode(new_mode)` cho các gameplay mode tương lai.
+- Chứa `enum GameplayInputMode` và `current_gameplay_mode` (hiện chỉ có `FLIGHT`).
+- `_input(event)` — chỉ gọi `Global_Input._input(event)` rồi pass.
+- **Không còn xử lý input flight** — toàn bộ đã chuyển xuống ship.
+- Có `_switch_gameplay_mode(new_mode)` cho tương lai.
 
 ### `camera/scripts/camera_base.gd`
 
@@ -124,104 +135,134 @@ ship_moving_scene.gd
 
 ### `scripts/movement/ship_movement_integrate.gd`
 
-- Không xử lý input trực tiếp (`_input`, `_unhandled_input`).
-- Chỉ chứa API gameplay:
-  - `move_to(new_position, is_sequence)`
-  - `adjust_target_height(offset)`
+- **Tự xử lý input flight** qua `_unhandled_input(event)` — đây là nơi duy nhất xử lý gameplay input.
+- Chứa toàn bộ `FlightInputState` machine:
+  - `IDLE` → nhận click để move / shift / clear
+  - `SEQUENCE_MOVE` → click nhanh (waypoint) hoặc hold (drag để set arrival facing)
+  - `SHIFT_MOVE` → drag để chọn vị trí, click để set facing
+- Chứa API gameplay (gọi nội bộ):
+  - `move_to(pos, is_sequence)`
+  - `adjust_waypoint_target_height(offset)` / `adjust_shift_target_height(offset)`
+  - `set_arrival_facing_preview(dir, active)` / `confirm_last_waypoint_arrival_facing()`
   - `clear_all_waypoints()`
-- Chịu trách nhiệm tính toán vật lý/động học.
+- Chịu trách nhiệm tính toán vật lý/động học qua `_integrate_forces(state)`.
+
+### `scripts/global/global_input.gd`
+
+- Xử lý global input: menu, toggle mouse, đổi camera.
+- Nhận diện `InputState` để camera biết khi nào không nên ăn input.
+- Chứa `camera_exclude_input_list` và `camera_exclude_state_list` để camera skip input khi đang ở gameplay mode.
+
+### `scripts/global/global_camera.gd`
+
+- Quản lý camera rig active + switch camera.
+- `handle_input(event)` — xử lý switch camera, mouse look, zoom.
+- Check `Global_Input.camera_exclude_input_list` và `camera_exclude_state_list` để không consume input khi đang ở gameplay mode.
 
 ---
 
-## 5. Luồng xử lý input hiện tại
+## 5. Luồng xử lý input thực tế
 
 ### 5.1. Thứ tự ưu tiên tổng quát
 
 ```text
-_input(event)
-  ├── 1. _input_global(event)
-  ├── 2. _input_active_camera(event)
-  └── 3. _input_<gameplay_mode>(event)
+Input Event
+  │
+  ├── [1] Global_Input._input(event)
+  │     ├── Menu / ESC / Toggle mouse
+  │     └── Global_Camera.handle_input(event)
+  │           ├── Switch camera (FREE ↔ SHIP_FAR ↔ SHIP_CLOSE)
+  │           ├── Mouse look (xoay camera)
+  │           └── Zoom (scroll → spring arm length)
+  │           (bỏ qua nếu đang giữ "sequence_move" hoặc "direction_shift_move")
+  │
+  └── [2] ship_movement_integrate._unhandled_input(event)  ← Main flight input
+        └── FlightInputState Machine
+              └── dispatch theo state hiện tại
 ```
 
-Ý nghĩa:
-- input global luôn ưu tiên cao nhất
-- camera chỉ ăn input camera thật sự
-- gameplay nhận phần event còn lại
+> Scene controller (`ship_moving_scene.gd`) không còn tham gia xử lý input flight.
 
 ### 5.2. Click để di chuyển
 
 ```text
-_input_flight(event)
-  └── nếu event là MouseButton + pressed + action "move"
+_unhandled_input(event)
+  └── nếu FlightInputState.IDLE + action "move" + mouse_mode == VISIBLE
       └── raycast lấy click_pos
-          └── ship_player.move_to(click_pos, is_sequence)
-              └── set_input_as_handled()
+          ├── Nếu giữ "sequence_move" → buffer pos → vào SEQUENCE_MOVE
+          └── Nếu không → move_to(click_pos, is_sequence=false) ngay
 ```
 
-### 5.3. Scroll để chỉnh cao độ / zoom camera
-
-#### Free camera + scroll thường
+### 5.3. Sequence Move — Click vs Hold
 
 ```text
-_input_active_camera(event)
-  └── camera_free.handle_scene_input(event)
-      └── zoom spring arm
-          └── return true
+IDLE + click "move" + giữ "sequence_move"
+  └── buffer sequence_target_position → vào SEQUENCE_MOVE
+      └── HOLD_MOUSE (inner state)
+            ├── release < 0.2s → move_to(pos, true) + về IDLE
+            └── hold ≥ 0.2s → CHANGE_DIRECTION (inner state)
+                  └── drag chuột → preview arrow vàng
+                  └── release → confirm arrival_facing + về IDLE
 ```
 
-#### Free camera + gameplay modifier
+### 5.4. Shift Move — Drag to set position + facing
 
 ```text
-_input_flight(event)
-  └── nếu event là WHEEL_UP/WHEEL_DOWN
-      ├── nếu giữ "direction_shift_move"
-      │   └── ship_player.clear_all_waypoints()
-      └── nếu giữ "sequence_move"
-          └── ship_player.adjust_target_height(offset)
-
-      └── set_input_as_handled()
+IDLE + action "direction_shift_move"
+  └── create_shift_waypoint(raycast_pos) → vào SHIFT_MOVE
+      └── DRAG_MOUSE_AND_OFFSET (inner state)
+            └── mouse hover → cập nhật waypoint pos (clamp radius)
+            └── press "move" → CHANGE_DIRECTION (inner state)
+                  └── drag → preview arrow vàng
+                  └── press "move" + delay > 0.1s → confirm facing + về IDLE
+            └── press "direction_shift_move" lần nữa → cancel, về IDLE
 ```
 
-Lý do hoạt động được:
-- `camera_free_node.gd` sẽ **không consume scroll** nếu đang giữ:
-  - `sequence_move`
-  - `direction_shift_move`
-
-=> Event được nhường cho gameplay logic phía sau.
-
-### 5.4. Đổi camera
+### 5.5. Scroll — Chỉnh độ cao
 
 ```text
-_input_global(event)
-  └── change_camera_bw_free_n_character
-  ├── sang camera free    -> switch_to(camera_3d_free)
-  └── về camera character -> switch_to(camera_3d_character_far)
+[Trong input_state_idle / input_state_sequence_move]
+  └── Giữ "sequence_move" + scroll → adjust_waypoint_target_height(±1)
+
+[Trong input_state_shift_move]
+  └── Scroll (không cần modifier) → adjust_shift_target_height(±1)
 ```
 
-Lưu ý:
-- Không đổi `current_gameplay_mode`
-- Vì vậy free camera vẫn tạo waypoint được
+Camera **không** nhận scroll khi đang giữ `sequence_move` hoặc `direction_shift_move` nhờ guard trong `Global_Camera.handle_input()`.
+
+### 5.6. Đổi camera
+
+```text
+Global_Input._input(event)
+  └── Global_Camera.handle_input(event)
+      ├── "change_to_free_camera"      → switch_to(camera_3d_free)
+      ├── "change_to_character_camera" → switch_to(camera_3d_character_far/close)
+      ├── MouseMotion (nếu CAPTURED)   → xoay camera (orbit/look)
+      └── "camera_zoom_in/out"         → zoom spring arm
+```
+
+Lưu ý: Đổi camera không đổi `current_gameplay_mode`.
 
 ---
 
 ## 6. Quản lý input cho "node bên trong"
 
-### Nguyên tắc
+### Nguyên tắc (khuyến nghị)
 
 - Node con **không đọc input trực tiếp** nếu input đó là gameplay chung.
 - Node con chỉ nhận lệnh qua hàm public.
 - Camera là trường hợp đặc biệt: được phép có input riêng, nhưng phải đi qua API chung.
 
-Ví dụ tốt:
-- `scene controller` đọc scroll rồi gọi `ship_player.adjust_target_height(offset)`.
-- `scene controller` gọi `Global_Camera.current_rig.handle_scene_input(event)` rồi nhận `true/false`.
+### Thực tế hiện tại (2026-06)
 
-Ví dụ không nên (trừ trường hợp đặc biệt):
-- `ship_player` tự bắt `InputEventMouseButton` trong `_unhandled_input`.
-- scene tự viết toàn bộ chi tiết zoom/orbit của từng loại camera.
+Hiện tại, `ship_movement_integrate.gd` (RigidBody3D — node con của scene) tự xử lý input flight qua `_unhandled_input()`. Đây là một **lệch khỏi kiến trúc khuyến nghị** vì:
+- Gộp input state machine + physics + waypoint management vào 1 file (~900 dòng).
+- Scene controller (`ship_moving_scene.gd`) bị rỗng, không còn vai trò routing.
+- Khó mở rộng gameplay mode mới vì input logic nằm trong node vật lý.
 
-### Trường hợp ngoại lệ
+Nếu có thời gian refactor, nên đưa `FlightInputState` machine về scene controller hoặc một node riêng.
+
+### Trường hợp ngoại lệ (vẫn áp dụng)
 
 Node con có thể tự xử lý input khi:
 - Input đó chỉ phục vụ node đó, độc lập gameplay tổng (ví dụ camera orbit riêng).
@@ -279,16 +320,18 @@ Kết quả:
 
 ## 9. Quick conventions cho team
 
-- Tên hàm input theo pattern:
+- Tên hàm input theo pattern (khuyến nghị):
   - `_input_global(event)`
   - `_input_active_camera(event)`
   - `_input_<gameplay_mode>(event)`
 - Tên API gameplay dùng động từ rõ nghĩa:
-  - `move_to`, `clear_all_waypoints`, `adjust_target_height`
+  - `move_to`, `clear_all_waypoints`, `adjust_waypoint_target_height`
 - Tên API camera:
   - `handle_scene_input(event) -> bool`
-- Không gọi `Input.is_action_pressed()` trực tiếp trong script vật lý (trừ prototype ngắn hạn).
+- Tránh gọi `Input.is_action_pressed()` trực tiếp trong script vật lý (hiện tại ship vẫn gọi trong `_unhandled_input` — cần refactor sau).
 - Camera consume event bằng `return true`, không tự quyết định routing gameplay phía sau.
+- Flight input state machine nên nằm ở scene controller, không phải trong RigidBody3D.
+- Khi thêm state mới, đồng bộ lên `Global_Input.InputState` để camera biết.
 
 ---
 

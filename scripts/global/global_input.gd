@@ -1,13 +1,13 @@
 extends Node
 
 enum GameState {MENU, PLAY}
-enum InputState {NONE, SEQUENCE_MOVE, SHIFT_MOVE}
+enum InputState {NONE, SEQUENCE_MOVE, SHIFT_MOVE, ENERGY_TURN}
 var current_game_state: GameState
 var current_input_state: InputState
 
 # Input exclude
-var camera_exclude_input_list = ["sequence_move", "direction_shift_move"]
-var camera_exclude_state_list = [InputState.SEQUENCE_MOVE, InputState.SHIFT_MOVE]
+var camera_exclude_input_list = ["sequence_move", "direction_shift_move", "energy_turn"]
+var camera_exclude_state_list = [InputState.SEQUENCE_MOVE, InputState.SHIFT_MOVE, InputState.ENERGY_TURN]
 
 func _input(event: InputEvent) -> void:
 	if handle_input(event):

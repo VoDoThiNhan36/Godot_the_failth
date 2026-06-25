@@ -39,30 +39,49 @@ func shoot_ray_3d(camera_3d: Camera3D, character_body_3d: Node3D, ray_length: fl
 	var ray_query = PhysicsRayQueryParameters3D.create(from_position, to_position)
 	var raycast_result = space.intersect_ray(ray_query)	# Kết quả
 	
-	# 2. Xử lý kết quả
+	# 2. Xử lý kết quả — trả về Dictionary để caller tự quyết định
+	# Dictionary gồm: { position, hit_ship, collider, normal }
+	# - position: Vector3 vị trí click trong world
+	# - hit_ship: bool true nếu click trúng ship của mình
+	# - collider: Node3D bị trúng (hoặc null)
+	# - normal: Vector3 pháp tuyến tại điểm va chạm (nếu có)
+	
 	# Trường hợp 1: Click trúng ship của mình
 	if raycast_result and raycast_result["collider"] == character_body_3d:
-		# Trả kết quả về
-		return character_body_3d.global_transform.origin
+		return {
+			"position": raycast_result["position"],
+			"hit_ship": true,
+			"collider": character_body_3d,
+			"normal": raycast_result.get("normal", Vector3.UP)
+		}
 	
-	# Trường hợp 2: Click vào khoảng không HOẶC click trúng tiểu hành tinh khác
-	else:
-		# Lấy tọa độ y của ship (default click sẽ là cùng cao độ với ship)
-		var ship_y = character_body_3d.global_position.y
-		
-		# Tạo mặt phẳng ngang (Vector3.UP) ở độ cao Y của tàu
-		var virtual_plane = Plane(Vector3.UP, ship_y)
-		# Tìm điểm cắt giữa tia và mặt phẳng
-		var intersection = virtual_plane.intersects_ray(from_position, ray_direction)
-		
-		if intersection != null:
-			#print("Gắn mục tiêu di chuyển mới tại: ", intersection)
-			## Hiện marker lên
-			#target_marker.visible = true
-			#target_marker.global_position = intersection
-			# Trả kết quả về
-			return intersection
+	# Trường hợp 2: Click trúng vật thể khác (tiểu hành tinh, v.v.)
+	if raycast_result:
+		return {
+			"position": raycast_result["position"],
+			"hit_ship": false,
+			"collider": raycast_result["collider"],
+			"normal": raycast_result.get("normal", Vector3.UP)
+		}
 	
-	# Return null otherwise
+	# Trường hợp 3: Click vào khoảng không — project lên mặt phẳng XZ tại độ cao ship
+	# Lấy tọa độ y của ship (default click sẽ là cùng cao độ với ship)
+	var ship_y = character_body_3d.global_position.y
+	# Tạo mặt phẳng ngang (Vector3.UP) ở độ cao Y của tàu
+	var virtual_plane = Plane(Vector3.UP, ship_y)
+	# Tìm điểm cắt giữa tia và mặt phẳng
+	var intersection = virtual_plane.intersects_ray(from_position, ray_direction)
+		
+	if intersection != null:
+		## Hiện marker lên
+		#target_marker.visible = true
+		#target_marker.global_position = intersection
+		return {
+			"position": intersection,
+			"hit_ship": false,
+			"collider": null,
+			"normal": Vector3.UP
+		}
+	
+	# Return null nếu tia song song mặt phẳng XZ (nhìn thẳng lên/xuống)
 	return null
-			

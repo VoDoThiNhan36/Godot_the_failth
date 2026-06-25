@@ -7,8 +7,11 @@ class_name Steering_Fajen_Warrent
 @export var fajen_detection_radius := 35.0
 @export var fajen_max_obstacles := 15
 @export var fajen_kg := 20.0
-@export var fajen_ko := 400.0
-@export var fajen_b := 4.2
+@export var fajen_ko := 180.0
+@export var fajen_b := 2.2
+@export var fajen_c1 := 0.4
+@export var fajen_c2 := 0.4
+@export var fajen_c3 := 6.0
 @export var fajen_c4 := 0.2
 @export var fajen_noise := 0.2
 @export var fajen_angular_damping := 1.0	# Damping cho fajen_angular_velocity (giống draff angular_damping)
@@ -120,8 +123,8 @@ func compute_fajen_angular_acceleration(ship: Node3D, ship_heading_vector: Vecto
 	## Tính trọng số theo khoảng cách: kg * (phi - psi_g) * (exp(-c1 * dg) + c2)
 	## c1 và c2 là các hằng số 0.4 
 	## (exp(-0.4 * d_goal) + 0.4) càng về gần target thì càng gần bằng 1, lực hút tới target càng lớn
-	var goal_term_yaw: float = fajen_kg * goal_error_yaw * (exp(-0.4 * distance_to_goal) + 0.4)
-	var goal_term_pitch: float = fajen_kg * goal_error_pitch * (exp(-0.4 * distance_to_goal) + 0.4)
+	var goal_term_yaw: float = fajen_kg * goal_error_yaw * (exp(-fajen_c1 * distance_to_goal) + fajen_c2)
+	var goal_term_pitch: float = fajen_kg * goal_error_pitch * (exp(-fajen_c1 * distance_to_goal) + fajen_c2)
 
 	## Tính thêm vào phi double dot
 	phi_double_dot_yaw -= goal_term_yaw
@@ -180,8 +183,8 @@ func compute_fajen_angular_acceleration(ship: Node3D, ship_heading_vector: Vecto
 		
 		## Tổng hợp lực đẩy của obstacle
 		## Hằng số c3 là 6.0
-		var obs_term_yaw = dynamic_ko * obs_error_yaw * exp(-6.0 * abs(obs_error_yaw)) * exp(-fajen_c4 * distance_to_obstacle)
-		var obs_term_pitch = dynamic_ko * obs_error_pitch * exp(-6.0 * abs(obs_error_pitch)) * exp(-fajen_c4 * distance_to_obstacle)
+		var obs_term_yaw = dynamic_ko * obs_error_yaw * exp(-fajen_c3 * abs(obs_error_yaw)) * exp(-fajen_c4 * distance_to_obstacle)
+		var obs_term_pitch = dynamic_ko * obs_error_pitch * exp(-fajen_c3 * abs(obs_error_pitch)) * exp(-fajen_c4 * distance_to_obstacle)
 		
 		# Tính lại phi double dot
 		phi_double_dot_yaw += obs_term_yaw

@@ -11,12 +11,14 @@ extends RigidBody3D
 @export var lateral_damp_value   	:= 5.0	  	# Hệ số giảm chấn cho vận tốc ngang, giúp tàu không bị trượt quá đà
 @export var shift_lateral_damp_multiplier := 0.0	# Hệ số giảm chấn cho vận tốc ngang khi thực hiện SHIFT move (0 = giữ nguyên vận tốc ngang)
 var linear_power_to_mass_ratio 		:= 0.0			# Tỉ số giữa lực đẩy tối đa và khối lượng, multiply cho engine và mass khác nhau
+var combusion_boost_multiplier		:= 2.0			# Hệ số nhân cho tính năng dùng booster combusion (main engine)
+var combusion_rotation_multiplier	:= 0.25			# Hệ số nhân cho tính năng dùng booster combusion (rotation engine)
+var is_combusion_boost_active 		:= false		# Flag trạng thái boost — true khi đang giữ nút boost
 var current_thrust_force 			:= 0.0			# Lực đẩy hiện tại đang áp dụng, dùng để nội suy tăng giảm lực đẩy
 var is_at_brake_distance 			:= false		# Flag để check đã vào vùng phanh
 var auto_throttle 					:= 0.0			# Giá trị tự động điều chỉnh lực đẩy theo độ lệch hướng (alignment)
 var lateral_velocity 				:= Vector3.ZERO	# Velocity của lực trượt ngang
 var forward_velocity 				:= Vector3.ZERO	# Velocity của lực đúng hướng
-var min_distance_diagonally_move 	:= 0.5			# Khoảng cách tối thiểu để di chuyển chéo (để tránh lỗi khi click quá gần)
 
 @export_group("Rotation")
 var rotation_desired_direction 		:= Vector3.ZERO	# Hướng mong muốn để xoay về
@@ -26,7 +28,7 @@ var rotation_desired_direction 		:= Vector3.ZERO	# Hướng mong muốn để xo
 @export var max_turn_torque_rcs     := 50.0    	# Khả năng tạo lực xoay của RCS (N*m)
 @export var rotation_p              := 2.0		# Hệ số phản hồi góc (Rotation Proportional Gain)
 @export var rotation_d              := 2.0   	# Hệ số phanh góc (Rotation Derivative/Damping) khi đang xoay
-@export var angular_damp_value   	:= 1.0		# Hệ số giảm chấn cho vận tốc góc, giúp tàu không bị xoay quá đà và có cảm giác quán tính khi đổi hướng
+@export var angular_damp_value   	:= 2.0		# Hệ số giảm chấn cho vận tốc góc, giúp tàu không bị xoay quá đà và có cảm giác quán tính khi đổi hướng
 @export var rotation_start_delay    := 0.1   	# Thời gian chờ (s) trước khi bắt đầu xoay khi phát hiện waypoint mới góc lệch lớn
 @export var rotation_delay_threshold := 60.0  	# Góc lệch tối thiểu (độ) để kích hoạt thời gian chờ
 @export var rotation_fine_zone      := 1.0   	# Vùng góc gần đích (độ): khi trong vùng này, tốc độ xoay giảm dần về 0 mượt hơn
@@ -65,13 +67,11 @@ var fajen_steering: Steering_Fajen_Warrent	# Instance của Fajen steering — t
 # Player state
 enum PlayerState { IDLE, MOVE }
 enum ShipSteeringMode { NONE, FAJEN_WARREN }
-enum InputMovingState {IDLE, SEQUENCE_MOVE, SHIFT_DIRECTION}
 var current_state: PlayerState
 var current_steering_mode: ShipSteeringMode
-var current_moving_mode: InputMovingState
 
 # Input state
-enum FlightInputState { IDLE, SEQUENCE_MOVE, SHIFT_MOVE}
+enum FlightInputState { IDLE, SEQUENCE_MOVE, SHIFT_MOVE, ENERGY_TURN}
 var current_input_state: FlightInputState = FlightInputState.IDLE
 var current_input_inner_state: Variant = null
 var input_delay_timer := 0.0	# Bộ đếm thời gian để ngắ thao tác một nút giống nhau giữa 2 state
@@ -80,16 +80,25 @@ var input_hold_threshold := 0.2		# Ngưỡng thời gian (s) để phân biệt 
 var mouse_direction_accumulated := Vector2.ZERO		# Vector tích lũy hướng di chuột để xác định hướng chỉnh sửa
 
 # For sequence move
-enum SequenceMoveState {NONE, HOLD_MOUSE, CHANGE_DIRECTION}
+enum InputSequenceMoveState {NONE, HOLD_MOUSE, CHANGE_DIRECTION}
 var sequence_target_position := Vector3.ZERO	# Vị trí click chuột được raycast từ camera, dùng để tạo waypoint khi thả chuột sau hold hoặc click nhanh
 
 # For shift direction move
 @export var shift_max_radius := 20.0		# Bán kính tối đa cho phép của shift waypoint tính từ ship
 @export var rotate_start_buffer: float = 1.5
 @export var rotate_start_min_radius_mul: float = 3.0
-enum InputShiftState {NONE, DRAG_MOUSE_AND_OFFSET, CHANGE_DIRECTION}
+enum InputShilfMoveState {NONE, DRAG_MOUSE_AND_OFFSET, CHANGE_DIRECTION}
 var shift_target_position := Vector3.ZERO
 var shift_target_distance := 10.0
+
+# For energy turn move
+@export var energy_turn_radius := 5.0		# Bán kính tối đa của visual khi thực hiện turn
+@export var energy_turn_min_distance := 2.0	# Khoảng cách tối thiểu từ ship đến mouse_hover để kích hoạt (tránh click trúng ship)
+enum InputEnergyTurnState {NONE, DRAG_MOUSE_AND_OFFSET}
+var energy_turn_target_position := Vector3.ZERO	# Vị trí chuột trên mặt phẳng XZ, dùng để tính hướng xoay
+var is_energy_turning := false		# Flag để áp dụng xoay 3x trong _integrate_forces sau khi confirm
+var energy_turn_desired_dir := Vector3.ZERO	# Hướng đã chọn (normalized) để xoay về khi confirm
+var energy_turn_multiplier: float = 3.0		# Hệ số nhân cho tính năng dùng energy turn
 
 # ============================== DEBUG ======================================
 
@@ -133,7 +142,6 @@ func _ready() -> void:
 
 	# Set state ban đầu
 	current_state = PlayerState.IDLE
-	current_moving_mode = InputMovingState.IDLE
 	current_steering_mode = ShipSteeringMode.NONE
 	current_target_direction = -global_transform.basis.z
 	
@@ -142,9 +150,10 @@ func _ready() -> void:
 	# linear_damp   = 0.0
 	# angular_damp  = 0.0
 	last_position = global_position
-	linear_power_to_mass_ratio = max_thrust_force / mass
+	## thrust / mass
+	linear_power_to_mass_ratio = (max_thrust_force) / mass
+	## (torque + rcs torque) / mass
 	rotation_power_to_mass_ratio = (max_turn_torque + max_turn_torque_rcs) / mass
-	min_distance_diagonally_move = ship_length + linear_power_to_mass_ratio * (rotation_power_to_mass_ratio / max_pitch_angle)
 
 	# Fajen steering setup — đồng bộ params + steering tự quản lý momentum
 	fajen_steering = Steering_Fajen_Warrent.new(max_angular_speed, angular_damp_value)
@@ -239,15 +248,19 @@ func process_flight_input(delta: float) -> void:
 			input_hold_timer += delta
 		
 		FlightInputState.SHIFT_MOVE:
-			if current_input_inner_state == InputShiftState.DRAG_MOUSE_AND_OFFSET:
+			if current_input_inner_state == InputShilfMoveState.DRAG_MOUSE_AND_OFFSET:
 				# Set shift target position liên tục theo vị trí chuột
-				var mouse_hover_position = get_mouse_hover_position()
-				if mouse_hover_position == null:
+				var mouse_hover_result = get_mouse_hover_position()
+				if mouse_hover_result == null:
 					# Mất raycast: giữ debug/waypoint ở bán kính tối đa theo hướng hiện tại
 					shift_target_position = get_shift_fallback_position_at_max()
 				else:
+					var hover_pos : Vector3 = mouse_hover_result["position"]
+					# Nếu click trúng ship, dùng tâm ship (giống hành vi cũ)
+					if mouse_hover_result["hit_ship"]:
+						hover_pos = global_position
 					# Tính lại shift target position với offset height
-					shift_target_position = mouse_hover_position * Vector3(1, 0, 1) + Vector3(0, global_position.y + current_target_height_offset, 0)
+					shift_target_position = hover_pos * Vector3(1, 0, 1) + Vector3(0, global_position.y + current_target_height_offset, 0)
 					# Giới hạn bán kính SHIFT theo tham số max
 					shift_target_position = clamp_shift_target_to_max_radius(shift_target_position)
 
@@ -258,7 +271,7 @@ func process_flight_input(delta: float) -> void:
 					ship_movement_waypoints.back().position = shift_target_position
 					ship_movement_waypoints.back().point_marker.global_position = shift_target_position
 			
-			elif current_input_inner_state == InputShiftState.CHANGE_DIRECTION:
+			elif current_input_inner_state == InputShilfMoveState.CHANGE_DIRECTION:
 				# Tích lũy thời gian delay để tránh chuyển state quá nhanh giữa DRAG_MOUSE_AND_OFFSET và CHANGE_DIRECTION
 				input_delay_timer += delta
 			
@@ -266,6 +279,27 @@ func process_flight_input(delta: float) -> void:
 			if shift_target_position != Vector3.ZERO:
 				_draw_shift_debug(global_position, shift_target_position)
 				debug_fill_mesh.visible = true
+		
+		FlightInputState.ENERGY_TURN:
+			if current_input_inner_state == InputEnergyTurnState.DRAG_MOUSE_AND_OFFSET:
+				# Cập nhật target position liên tục theo vị trí chuột (trên mặt phẳng XZ)
+				var mouse_hover_result = get_mouse_hover_position()
+				if mouse_hover_result == null:
+					# Mất raycast: giữ debug/waypoint ở bán kính tối đa theo hướng hiện tại
+					energy_turn_target_position = get_energy_turn_fallback_position_at_max()
+				else:
+					var hover_pos : Vector3 = mouse_hover_result["position"]
+					# Project lên mặt phẳng XZ tại độ cao ship
+					var flat_pos := Vector3(hover_pos.x, global_position.y, hover_pos.z)
+					# Giới hạn bán kính để khỏi quá vòng tròn
+					var offset := flat_pos - global_position
+					offset.y = 0.0
+					if offset.length() > energy_turn_radius:
+						offset = offset.normalized() * energy_turn_radius
+					energy_turn_target_position = global_position + offset
+
+				# Vẽ debug — vòng tròn + mũi tên
+				_draw_energy_turn_debug(global_position, energy_turn_target_position)
 	
 ## Hàm xử lý input chính — chỉ chuẩn bị data rồi dispatch vào state handler
 func _unhandled_input(event: InputEvent) -> void:
@@ -276,14 +310,23 @@ func _unhandled_input(event: InputEvent) -> void:
 	var camera_basis := camera_3d.global_transform.basis if camera_3d != null else Basis.IDENTITY
 
 	# Raycast chỉ khi có action cần vị trí chuột, không chạy mỗi frame
-	var mouse_hover_position: Variant = null
-	if (event.is_action_pressed("move") or event.is_action_pressed("direction_shift_move")) and camera_3d != null:
-		mouse_hover_position = get_mouse_hover_position()
+	var mouse_hover_result: Variant = null
+	if (event.is_action_pressed("move") or event.is_action_pressed("direction_shift_move") or event.is_action_pressed("energy_turn")) and camera_3d != null:
+		mouse_hover_result = get_mouse_hover_position()
+		# mouse_hover_position giờ là Dictionary { position, hit_ship, collider, normal }
+		# Các hàm handler dùng mouse_hover_position["position"] để lấy Vector3
+	
+	# ── COMBUSION BOOST: Bấm 1 lần bật, bấm lần nữa tắt (toggle) ──
+	if event.is_action_pressed("combusion_boost") and not is_energy_turning:
+		# Set flag
+		is_combusion_boost_active = !is_combusion_boost_active
+		recalculate_power_ratios()
 
 	match current_input_state:
-		FlightInputState.IDLE:          input_state_idle(event, mouse_hover_position)
+		FlightInputState.IDLE:          input_state_idle(event, mouse_hover_result)
 		FlightInputState.SEQUENCE_MOVE: input_state_sequence_move(event, camera_basis)
-		FlightInputState.SHIFT_MOVE:    input_state_shift_move(event, mouse_hover_position, camera_basis)
+		FlightInputState.SHIFT_MOVE:    input_state_shift_move(event, camera_basis)
+		FlightInputState.ENERGY_TURN:	input_state_energy_turn(event)
 
 func _change_flight_state(new_state: FlightInputState) -> void:
 	if current_input_state == new_state: return
@@ -296,7 +339,7 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 			# Set state hiện tại lên Global Input
 			Global_Input.change_input_state(Global_Input.InputState.NONE)
 			# Reset shift internal state
-			current_input_inner_state = SequenceMoveState.NONE
+			current_input_inner_state = InputSequenceMoveState.NONE
 			input_hold_timer = 0.0
 			sequence_target_position = Vector3.ZERO
 
@@ -304,7 +347,7 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 			# Set state hiện tại lên Global Input
 			Global_Input.change_input_state(Global_Input.InputState.NONE)
 			# Reset shift internal state
-			current_input_inner_state = InputShiftState.NONE
+			current_input_inner_state = InputShilfMoveState.NONE
 			input_delay_timer = 0.0
 			# Tắt debug shift target khi thoát shift move
 			if debug_fill_mesh.visible:
@@ -312,6 +355,13 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 				(debug_fill_mesh.mesh as ArrayMesh).clear_surfaces()
 				_dbg_ship_position = Vector3(1e9, 1e9, 1e9)
 				_dbg_shift_target  = Vector3(1e9, 1e9, 1e9)
+
+		FlightInputState.ENERGY_TURN:
+			# Set state hiện tại lên Global Input
+			Global_Input.change_input_state(Global_Input.InputState.NONE)
+			# Reset inner state — KHÔNG reset is_energy_turning vì nó được set TRƯỚC khi gọi _change_flight_state
+			current_input_inner_state = InputEnergyTurnState.NONE
+			energy_turn_target_position = Vector3.ZERO
 
 	match new_state:
 		FlightInputState.IDLE:
@@ -321,7 +371,7 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 			# Set state hiện tại lên Global Input
 			Global_Input.change_input_state(Global_Input.InputState.SEQUENCE_MOVE)
 			# Update shift internal state
-			current_input_inner_state = SequenceMoveState.HOLD_MOUSE
+			current_input_inner_state = InputSequenceMoveState.HOLD_MOUSE
 			mouse_direction_accumulated = Vector2.ZERO
 
 		FlightInputState.SHIFT_MOVE:
@@ -330,9 +380,22 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 			# Reset shift target position khi mới vào shift move
 			shift_target_position = Vector3.ZERO
 			# Update shift internal state
-			current_input_inner_state = InputShiftState.DRAG_MOUSE_AND_OFFSET
+			current_input_inner_state = InputShilfMoveState.DRAG_MOUSE_AND_OFFSET
 			# Show immediate preview for shift move
 			set_arrival_facing_preview(Vector3.FORWARD, true)
+
+		FlightInputState.ENERGY_TURN:
+			# Set state hiện tại lên Global Input để camera exclude
+			Global_Input.change_input_state(Global_Input.InputState.ENERGY_TURN)
+			# Update inner state
+			current_input_inner_state = InputEnergyTurnState.DRAG_MOUSE_AND_OFFSET
+			# Set initial target ở hướng mũi ship (trên XZ)
+			var heading := -global_transform.basis.z
+			energy_turn_target_position = Vector3(
+				global_position.x + heading.x * energy_turn_radius,
+				global_position.y,
+				global_position.z + heading.z * energy_turn_radius
+			)
 
 	# Set state mới
 	current_input_state = new_state
@@ -340,23 +403,46 @@ func _change_flight_state(new_state: FlightInputState) -> void:
 # Hàm xử lý Input state IDLE
 # Click -> Sequence move -> Nếu giữ nút sequence -> Nhận scroll chỉnh height -> Nhấn giữ chuột -> Cho điều chỉnh hướng
 # Nhấn nút shift move -> Shift move -> Nhận mouse motion để chỉnh độ dài + hướng
-func input_state_idle(event: InputEvent, mouse_hover_position: Variant) -> void:
+func input_state_idle(event: InputEvent, mouse_hover_result: Variant) -> void:
 	# Click chuột để di chuyển
 	if event.is_action_pressed("move"):
-		if mouse_hover_position == null:
+		if mouse_hover_result == null:
 			return
+		var click_pos: Vector3 = mouse_hover_result["position"]
 		# Nếu đang nhấn giữ sequence move → vào SEQUENCE_MOVE để chờ hold hoặc chỉnh hướnng
 		if Input.is_action_pressed("sequence_move"):
-			sequence_target_position = mouse_hover_position
+			# Sequence move cần khoảng cách tối thiểu để tránh click trúng ship
+			if global_position.distance_to(click_pos) < energy_turn_min_distance:
+				return
+
+			sequence_target_position = click_pos
 			_change_flight_state(FlightInputState.SEQUENCE_MOVE)
 		# Nếu không giữ sequence move → tạo waypoint và di chuyển ngay
 		else:
-			move_to(mouse_hover_position, false)
+			click_pos.y = global_position.y
+			move_to(click_pos, false)
 
 	# Nhấn shift move → tạo waypoint tại vị trí chuột + vào SHIFT_MOVE
-	if event.is_action_pressed("direction_shift_move") and mouse_hover_position != null:
-		create_shift_waypoint(mouse_hover_position)
+	if event.is_action_pressed("direction_shift_move") and mouse_hover_result != null:
+		var shift_pos: Vector3
+		if mouse_hover_result["hit_ship"]:
+			# Dính ship → dùng tâm ship làm vị trí (giống behavior cũ)
+			shift_pos = global_position
+		else:
+			shift_pos = mouse_hover_result["position"]
+		create_shift_waypoint(shift_pos)
 		_change_flight_state(FlightInputState.SHIFT_MOVE)
+
+	# Nhấn energy turn → vào ENERGY_TURN để chọn hướng xoay
+	if event.is_action_pressed("energy_turn") and mouse_hover_result != null and not is_energy_turning:
+		var click_pos: Vector3 = mouse_hover_result["position"]
+		# Nếu raycast trúng ship, khoảng cách ≈ 0 → dùng min distance để cancel
+		if global_position.distance_to(click_pos) < energy_turn_min_distance:
+			return
+
+		# Set initial target at mouse position (projected to XZ at ship Y)
+		energy_turn_target_position = Vector3(click_pos.x, global_position.y, click_pos.z)
+		_change_flight_state(FlightInputState.ENERGY_TURN)
 
 	# Scroll khi đang giữ sequence_move → chỉnh height waypoint
 	_handle_scroll_with_sequence_modifier(event)
@@ -377,24 +463,24 @@ func input_state_sequence_move(event: InputEvent, camera_basis: Basis) -> void:
 			_change_flight_state(FlightInputState.IDLE)
 			return
 		# Giữ chuột -> tạo waypoint + hướng
-		elif current_input_inner_state == SequenceMoveState.CHANGE_DIRECTION:
+		elif current_input_inner_state == InputSequenceMoveState.CHANGE_DIRECTION:
 			confirm_last_waypoint_arrival_facing()
 			set_arrival_facing_preview(Vector3.ZERO, false)
 			_change_flight_state(FlightInputState.IDLE)
 			return
 	
 	# Giữ đủ lâu -> chuyển state để chỉnh hướng
-	if current_input_inner_state == SequenceMoveState.HOLD_MOUSE:
+	if current_input_inner_state == InputSequenceMoveState.HOLD_MOUSE:
 		# Nếu có di chuyển chuột khi đang hold thì ghi nhận các số liệu chỉnh hướng
 		if event is InputEventMouseMotion:
 			mouse_direction_accumulated += event.relative
 
 		# Nếu giữ chuột đủ lâu → chuyển sang state chỉnh hướng
 		if input_hold_timer >= input_hold_threshold:
-			current_input_inner_state = SequenceMoveState.CHANGE_DIRECTION
+			current_input_inner_state = InputSequenceMoveState.CHANGE_DIRECTION
 	
 	# Tính hướng và set preview
-	if current_input_inner_state == SequenceMoveState.CHANGE_DIRECTION:
+	if current_input_inner_state == InputSequenceMoveState.CHANGE_DIRECTION:
 		# Drag chuột → cập nhật preview hướng
 		if event is InputEventMouseMotion:
 			mouse_direction_accumulated += event.relative
@@ -407,7 +493,7 @@ func input_state_sequence_move(event: InputEvent, camera_basis: Basis) -> void:
 
 # Hàm xử lý shift move: không cần hold threshold, vào mode ngay, scroll + drag hoạt động tự do
 # Exit: nhấn shift_move lần nữa hoặc nhấn move để clear
-func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, camera_basis: Basis) -> void:
+func input_state_shift_move(event: InputEvent, camera_basis: Basis) -> void:
 	# Nhấn chuột trái hoặc nhấn shift_move lần nữa để cancel shift move, bỏ waypoint
 	if (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed) or event.is_action_pressed("direction_shift_move"):
 		ship_movement_waypoints.pop_back().point_marker.queue_free() # Xóa marker của shift waypoint
@@ -417,12 +503,12 @@ func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, c
 	
 	# Thay đổi độ dài + offset waypoint theo di chuyển chuột liên tục
 	# Nhấn move sẽ giữ cố định waypoint lại, chuyển sang state tiếp theo để chỉnh hướng
-	if current_input_inner_state == InputShiftState.DRAG_MOUSE_AND_OFFSET and event.is_pressed():
+	if current_input_inner_state == InputShilfMoveState.DRAG_MOUSE_AND_OFFSET and event.is_pressed():
 		if event.is_action_pressed("move"):
-			current_input_inner_state = InputShiftState.CHANGE_DIRECTION
+			current_input_inner_state = InputShilfMoveState.CHANGE_DIRECTION
 
 	# Drag chuột → cập nhật preview facing (dùng chung helper với FACING_DRAG)
-	if current_input_inner_state == InputShiftState.CHANGE_DIRECTION:
+	if current_input_inner_state == InputShilfMoveState.CHANGE_DIRECTION:
 		if event is InputEventMouseMotion:
 			mouse_direction_accumulated += event.relative
 			var preview_dir := calculate_translate_direction_from_mouse_motion(mouse_direction_accumulated, camera_basis)
@@ -443,6 +529,44 @@ func input_state_shift_move(event: InputEvent, _mouse_hover_position: Variant, c
 
 	# Scroll → chỉnh height, không cần modifier
 	_handle_scroll(event)
+
+func input_state_energy_turn(event: InputEvent):
+	# Cancel: nhấn energy_turn lần nữa → thoát về IDLE, không xoay
+	if event.is_action_pressed("energy_turn"):
+		is_energy_turning = false
+		_change_flight_state(FlightInputState.IDLE)
+		return
+
+	# Cancel: nhấn chuột trái → thoát về IDLE, không xoay
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		is_energy_turning = false
+		_change_flight_state(FlightInputState.IDLE)
+		return
+
+	# Confirm: nhấn "move" → xoay ship về hướng đã chọn với 3x gain (không scale ratio)
+	if event.is_action_pressed("move"):
+		# 1. Tính hướng từ ship đến target (trên mặt phẳng XZ)
+		var dir := energy_turn_target_position - global_position
+		dir.y = 0.0
+		if dir.length_squared() > 0.001:
+			energy_turn_desired_dir = dir.normalized()
+			# current_target_direction = energy_turn_desired_dir.normalized()
+			# rotation_desired_direction = energy_turn_desired_dir.normalized()
+		else:
+			# 1a... Fallback: xoay về hướng mũi ship hiện tại
+			energy_turn_desired_dir = -global_transform.basis.z
+			energy_turn_desired_dir.y = 0.0
+			if energy_turn_desired_dir.length_squared() > 0.001:
+				energy_turn_desired_dir = energy_turn_desired_dir.normalized()
+
+		# 2. KHÔNG scale rotation_power_to_mass_ratio (fix fragile)
+		# Physics sẽ tính angular velocity với 3x gain trong _integrate_forces
+		is_energy_turning = true
+		recalculate_power_ratios()
+
+		# 3. Chuyển flight state về IDLE (ship sẽ xoay trong physics)
+		_change_flight_state(FlightInputState.IDLE)
+		return
 	
 # ======================================== INPUT HELPERS ========================================
 
@@ -512,6 +636,7 @@ func clamp_shift_target_to_max_radius(target_pos: Vector3) -> Vector3:
 
 	return target_pos
 
+# Hàm lấy hướng shift nếu mất raycast
 func get_shift_fallback_position_at_max() -> Vector3:
 	# Ưu tiên: project camera ray → XZ plane tại độ cao ship để indicator vẫn theo chuột
 	var camera_3d = Global_Camera.get_active_camera()
@@ -522,7 +647,6 @@ func get_shift_fallback_position_at_max() -> Vector3:
 	var dir_flat := ray_dir
 	dir_flat.y = 0.0
 
-	# Nếu hướng gần như bằng 0, fallback về hướng thẳng sau ship 
 	# Nếu vẫn gần bằng 0, fallback về hướng thẳng sau world (đồng thời tránh lỗi normalize ZERO)
 	if dir_flat.length_squared() < 0.0001:
 		dir_flat = -global_transform.basis.z
@@ -536,6 +660,32 @@ func get_shift_fallback_position_at_max() -> Vector3:
 		global_position.x + dir_flat.x * shift_max_radius,
 		global_position.y + current_target_height_offset,
 		global_position.z + dir_flat.z * shift_max_radius
+	)
+
+# Hàm lấy hướng energy turn nếu mất raycast
+func get_energy_turn_fallback_position_at_max() -> Vector3:
+	# Ưu tiên: project camera ray → XZ plane tại độ cao ship để indicator vẫn theo chuột
+	var camera_3d = Global_Camera.get_active_camera()
+	var mouse_pos := get_viewport().get_mouse_position()
+	var ray_dir    := camera_3d.project_ray_normal(mouse_pos)
+
+	# Nếu raycast không trúng, sử dụng hướng từ chuột
+	var dir_flat := ray_dir
+	dir_flat.y = 0.0
+
+	# Nếu vẫn gần bằng 0, fallback về hướng mũi ship
+	if dir_flat.length_squared() < 0.0001:
+		dir_flat = -global_transform.basis.z
+		dir_flat.y = 0.0
+		if dir_flat.length_squared() < 0.0001:
+			dir_flat = Vector3.BACK
+
+	dir_flat = dir_flat.normalized()
+
+	return Vector3(
+		global_position.x + dir_flat.x * energy_turn_radius,
+		global_position.y + 0.0,
+		global_position.z + dir_flat.z * energy_turn_radius
 	)
 
 # ============================== PROCESS ==============================
@@ -566,7 +716,6 @@ func _process(_delta: float) -> void:
 		"\nHas target       : "       + str(current_waypoint != null) + \
 		"\nCurrent target direction     : "       + str(current_target_direction) + \
 		"\nCurrent origin position     : "       + str(current_ship_origin_position) + \
-		"\nMin distance diag : "       + str(snappedf(min_distance_diagonally_move, 0.01)) + " m" + \
 		"\nAt brake dist    : "       + str(is_at_brake_distance) + \
 		"\nDistance to target: "       + str(snappedf(_dbg_distance_to_target, 0.01)) + \
 		"\nBrake distance   : "       + str(snappedf(_dbg_braking_dist, 0.01)) + \
@@ -575,7 +724,6 @@ func _process(_delta: float) -> void:
 	
 	rich_text_label_2.text = \
 		"Ship state			: "       + str(current_state) + \
-		"\nMoving state	: "       + str(current_moving_mode) + \
 		"\nInput state		: "       + str(current_input_state) + \
 		"\nInput inner state: "       + str(current_input_inner_state) + \
 		"\nDirection preview active: " + str(arrival_facing_preview_active) + \
@@ -606,17 +754,6 @@ func change_state(new_state: PlayerState) -> void:
 
 	current_state = new_state
 	print("State changed to: ", current_state)
-
-# Hàm đổi state — chỉ đổi khi khác state hiện tại
-func change_moving_state(new_state: InputMovingState) -> void:
-	if current_moving_mode == new_state: return
-
-	match new_state:
-		InputMovingState.SEQUENCE_MOVE: pass
-		InputMovingState.SHIFT_DIRECTION: pass
-
-	current_moving_mode = new_state
-	print("Moving mode changed to: ", current_moving_mode)
 
 # ============================== INTEGRATE FORCES (KINEMATIC OVERRIDE) ======================================
 
@@ -655,55 +792,65 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 				_dbg_lateral_vel = lateral_velocity
 				_dbg_linear_vel = state.linear_velocity
 				
-		PlayerState.MOVE: 
+		PlayerState.MOVE:
+			# ── TẦNG 1: THRUST + DIRECTION (Priority Pipeline) ──
 			# Xử lý di chuyển theo loại waypoint hiện tại
 			match current_waypoint.type:
 				"sequence":
 					compute_sequence_move_target_direction(state, distance_to_target, direction_to_target, ship_heading, delta)
-					# Triệt tiêu trượt ngang và IDLE damping
+					# Triệt tiêu vận tốc ngang (chống trượt quá đà)
 					compute_sequence_move_lateral_damping(state, delta)
-					 
+
 				"shift":
 					compute_shift_move_target_direction(state, distance_to_target, direction_to_target, ship_heading, delta)
-					# Triệt tiêu trượt ngang và IDLE damping
-					# Không cần triệt tiêu, damping đã có thrust control lo
-					# compute_shift_move_lateral_damping(state, delta)
+					# Shift move giữ nguyên vận tốc ngang (thrust control tự lo damping)
 	
-	# Xoay để hướng tới target
 	# =========================================================
-	# STEERING: Fajen (xa) hoặc manual torque (gần)
+	# TẦNG 2: STEERING — Fajen (xa), manual (gần), hoặc energy turn override
 	# =========================================================
-	# Tính desired direction theo thuật toán steering khi distance còn xa
-	if distance_to_target > ship_length * 3.0:
-		# Set mode steering đang dùng
+	if is_energy_turning:
+		# # === ENERGY TURN: dùng update_rotation với 3x power_multiplier ===
+		# # Không duplicate rotation logic — update_rotation tự xử lý angle/axis/clamp
+		current_steering_mode = ShipSteeringMode.NONE
+		# # Reset rotation delay để không bị delay khi energy turn
+		rotation_delay_timer = 0.0
+		angle_change_factor = 1.0
+		angle_fine_factor = 1.0
+		lateral_velocity = lateral_velocity.lerp(Vector3.ZERO, 0.5 * delta)
+
+		# # 1. Dùng update_rotation
+		update_rotation(state, energy_turn_desired_dir, delta)
+
+		# 2. Tự động thoát khi đã xoay gần đúng hướng (sai số < 1 độ)
+		if ship_heading.angle_to(energy_turn_desired_dir) < deg_to_rad(1.0):
+			is_energy_turning = false
+			recalculate_power_ratios()
+			state.angular_velocity = Vector3.ZERO
+
+	elif distance_to_target > ship_length * 5.0:
+		# === FAJEN STEERING (xa) ===
 		current_steering_mode = ShipSteeringMode.FAJEN_WARREN
+		var max_engine_accel := rotation_power_to_mass_ratio
 
-		# =========================================================
-		# FAJEN STEERING — Steering tự tích lũy nội bộ (giống draff)
-		# Chỉ gọi compute(), steering tự lo clamp/damp/clamp max,
-		# ship chỉ việc gán velocity vào state.angular_velocity
-		# =========================================================
-		var max_engine_accel := rotation_power_to_mass_ratio  # = angular_acceleration / mass
-
-		# 1. Gọi Fajen — steering tự tích lũy vào fajen_angular_velocity nội bộ
+		# 1... Gọi Fajen — steering tự tích lũy nội bộ
 		var fajen_result = fajen_steering.compute_fajen_angular_acceleration(
 			self, ship_heading, direction_to_target, current_target_position, delta, max_engine_accel)
-		var fajen_vel: Vector2 = fajen_steering.get_fajen_angular_velocity()  # Đã tích lũy + damp + clamp
+		var fajen_vel: Vector2 = fajen_steering.get_fajen_angular_velocity()
 		var total_repulsion: float = fajen_result["repulsion_force"]
 
-		# 2. Gán trực tiếp velocity vào angular_velocity (Kinematic override)
+		# 2... Gán angular_velocity từ Fajen
 		var yaw_axis   := Vector3.UP
 		var pitch_axis := state.transform.basis.x.normalized()
 		state.angular_velocity = yaw_axis * fajen_vel.y + pitch_axis * fajen_vel.x
 
-		# 3. Danger throttle — giống draff: ngưỡng 5.0
+		# 3... Danger throttle
 		if total_repulsion > 5.0:
 			danger_throttle_factor = clamp(1.0 - (total_repulsion / 50.0), 0.1, 1.0)
 			auto_throttle *= danger_throttle_factor
 		else:
 			danger_throttle_factor = 1.0
-		
-		# 4. Debug — hiển thị tất cả kết quả công thức Fajen
+
+		# 4... Debug
 		var obs_debug_str := ""
 		var obs_details: Array = fajen_result.get("obstacle_details", [])
 		for i in range(obs_details.size()):
@@ -717,7 +864,7 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 				obs["dynamic_ko"]
 			]
 		if obs_debug_str == "": obs_debug_str = "  (none)\n"
-		
+
 		rich_text_label_3.text = \
 			"FAJEN FORMULA\n" + \
 			"─────────────────────────\n" + \
@@ -739,15 +886,17 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 			"obstacle_count          : "   + str(fajen_result["obstacle_count"]) + "\n" + \
 			"danger_throttle_factor  : "   + str(snappedf(danger_throttle_factor, 0.01)) + "\n" + \
 			"\nOBSTACLE DETAILS\n" + \
-			obs_debug_str	
-	
-	# Khoảng cách gần target, không dùng steering mà dùng manual
+			obs_debug_str
+
 	else:
-		# Set mode steering đang dùng
+		# === MANUAL ROTATION (gần) ===
 		current_steering_mode = ShipSteeringMode.NONE
+		fajen_steering.set_fajen_angular_velocity(Vector2.ZERO)
 		update_rotation(state, rotation_desired_direction, delta)
 
-	# Auto correct roll
+	# =========================================================
+	# TẦNG 3: STABILIZE — luôn chạy, giữ ship ổn định
+	# =========================================================
 	apply_roll_clamp(state)
 	apply_pitch_clamp(state)
 
@@ -963,9 +1112,22 @@ func compute_shift_move_lateral_damping(state: PhysicsDirectBodyState3D, delta: 
 	_dbg_lateral_vel  = lateral_velocity
 	_dbg_linear_vel   = state.linear_velocity
 
+# Hàm set lại power raito ở các flag move khác nhau
+func recalculate_power_ratios():
+	var combusion_boost = combusion_boost_multiplier if is_combusion_boost_active else 1.0
+	var rotation_boost = combusion_rotation_multiplier if is_combusion_boost_active else 0.0
+	var turn_boost = energy_turn_multiplier if is_energy_turning else 1.0
+
+	## (thrust * boost) / mass
+	linear_power_to_mass_ratio = (max_thrust_force * combusion_boost) / mass
+	## (torque + rcs torque) * (boost * boost effecient) * energy turn milti / mass
+	rotation_power_to_mass_ratio = ((max_turn_torque + max_turn_torque_rcs) * (combusion_boost + (combusion_boost * rotation_boost)) * turn_boost) / mass
+
+
 # ============================== KINEMATIC ROTATION ======================================
 
 # Hàm này ghi đè (Override) sức xoay của lý thuyết Rigid bằng thuật toán Look_At Quaternion
+# power_multiplier: nhân công suất xoay (mặc định 1.0, energy turn dùng 3.0)
 func update_rotation(state: PhysicsDirectBodyState3D, desired_dir: Vector3, delta: float) -> void:
 	# Xử lý trường hợp không có hướng (điểm đến trùng với vị trí hiện tại) → giữ nguyên hướng hiện tại
 	if desired_dir.length_squared() < 0.000001:
@@ -1029,12 +1191,13 @@ func update_rotation(state: PhysicsDirectBodyState3D, desired_dir: Vector3, delt
 	else:
 		angle_fine_factor = 1.0
 
-	# 6. Ép Vận Tốc Góc (Angular Velocity)
+	# 6. Ép Vận Tốc Góc (Angular Velocity) — nhân với power_multiplier để tăng/sức xoay tạm thời
 	# Tính tốc độ xoay lý thuyết cần đạt được
 	var turn_speed = angle * rotation_p * angle_fine_factor * angle_change_factor # Biến rot_p trở thành độ phi feedback, fine_factor giảm dần khi vào vùng đích
 
-	if abs(turn_speed) > max_angular_speed * rotation_power_to_mass_ratio:
-		turn_speed = sign(turn_speed) * max_angular_speed * rotation_power_to_mass_ratio
+	var max_turn_speed = max_angular_speed * rotation_power_to_mass_ratio
+	if abs(turn_speed) > max_turn_speed:
+		turn_speed = sign(turn_speed) * max_turn_speed
 	
 	# 7. Tính tốc độ xoay cần thiết
 	# Đích đến của Vận Tốc Góc
@@ -1381,3 +1544,31 @@ func _draw_shift_debug(ship_position: Vector3, shift_target_pos: Vector3) -> voi
 		var a: float = TAU * float(i) / 36.0
 		circle_pts.append(origin_flat + Vector3(cos(a), 0.0, sin(a)) * max_radius)
 	DebugDraw3D.draw_line_path(circle_pts, limit_color)
+
+## Vẽ debug energy turn: circle + direction arrow (dùng DebugDraw3D, auto-clear mỗi frame)
+func _draw_energy_turn_debug(ship_pos: Vector3, target_pos: Vector3) -> void:
+	var origin := ship_pos + Vector3(0, 2.0, 0)  # Cao hơn ship 2m để dễ thấy
+	
+	# Màu cam cho energy turn
+	var col_circle := Color(1.0, 0.6, 0.0, 0.8)   # Cam
+	var col_arrow := Color(1.0, 0.4, 0.0, 1.0)    # Cam đậm
+	var col_facing := Color(1.0, 0.8, 0.0, 1.0)   # Vàng
+	
+	# Vòng tròn giới hạn energy_turn_radius
+	var circle_pts := PackedVector3Array()
+	for i in range(37):
+		var a: float = TAU * float(i) / 36.0
+		circle_pts.append(origin + Vector3(cos(a), 0.0, sin(a)) * energy_turn_radius)
+	DebugDraw3D.draw_line_path(circle_pts, col_circle)
+	
+	# Mũi tên từ ship đến target
+	var target_origin := Vector3(target_pos.x, origin.y, target_pos.z)
+	var dist := origin.distance_to(target_origin)
+	if dist > 0.1:
+		DebugDraw3D.draw_arrow(origin, target_origin, col_arrow, 0.1)
+	
+	# Mũi tên hướng (facing) — kéo dài từ target ra xa thêm 4m
+	if dist > 0.5:
+		var dir := (target_origin - origin).normalized()
+		var facing_end := target_origin + dir * 4.0
+		DebugDraw3D.draw_arrow(target_origin, facing_end, col_facing, 0.08)

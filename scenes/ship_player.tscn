@@ -14,18 +14,41 @@ height = 5.22243
 [node name="Ship_Player" type="Node"]
 
 [node name="RigidBody3D" type="RigidBody3D" parent="."]
-mass = 100.0
+mass = 200.0
 physics_material_override = SubResource("PhysicsMaterial_y8gn2")
 gravity_scale = 0.0
 can_sleep = false
 freeze_mode = 1
 script = ExtResource("1_y8gn2")
+linear_accel_time = null
+max_thrust_force = null
+linear_damp_value = null
+arrival_radius = null
+blend_arrival_distance = null
+lateral_damp_value = null
+shift_lateral_damp_multiplier = null
+rotation_accel_time = null
+max_angular_speed = null
+max_turn_torque = null
+max_turn_torque_rcs = null
+rotation_p = null
 rotation_d = 6.0
+angular_damp_value = null
 rotation_start_delay = 1.0
 rotation_delay_threshold = 90.0
+rotation_fine_zone = null
+angle_change_factor = null
+angle_fine_factor = null
+max_roll_angle = null
+max_pitch_angle = null
+angular_damp_roll = null
 angular_damp_pitch = 5.0
 angular_stable_power_ratio = 0.2
 shift_max_radius = 5.0
+rotate_start_buffer = null
+rotate_start_min_radius_mul = null
+energy_turn_radius = null
+energy_turn_min_distance = null
 
 [node name="Ship_part" parent="RigidBody3D" instance=ExtResource("1_l3rv8")]
 
@@ -60,7 +83,6 @@ offset_bottom = 644.0
 bbcode_enabled = true
 
 [node name="RichTextLabel2" type="RichTextLabel" parent="."]
-visible = false
 offset_left = 842.0
 offset_top = 1.0
 offset_right = 1111.0
@@ -69,6 +91,7 @@ bbcode_enabled = true
 tab_size = 0
 
 [node name="RichTextLabel3" type="RichTextLabel" parent="."]
+visible = false
 offset_left = 842.0
 offset_top = 7.0
 offset_right = 1111.0
