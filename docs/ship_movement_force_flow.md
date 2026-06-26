@@ -1,6 +1,6 @@
 # Tài liệu: Luồng Kinematic Override — ship_movement_integrate.gd
-> RigidBody3D · Godot 4 · Cập nhật: 2026-06-23
-> Áp dụng cho file `scripts/movement/ship_movement_integrate.gd` (thay thế `ship_movement.gd` cũ)
+> RigidBody3D · Godot 4 · Cập nhật: 2026-06-26
+> Cập nhật: 3-tier Priority Pipeline, recalculate_power_ratios, energy turn override
 
 ---
 
@@ -14,26 +14,27 @@ _integrate_forces(state)
 │   ├── danger_throttle_factor = 1.0
 │   └── distance_traveled += ...
 │
-├── [PlayerState Machine]
-│   ├── IDLE → handle_state_idle + damping linear/angular/lateral velocity
-│   │           + apply_roll_correction + apply_pitch_correction
+├── [TẦNG 1: THRUST + DIRECTION]
+│   ├── PlayerState.IDLE → handle_state_idle + damping
+│   │   + apply_roll_correction + apply_pitch_correction
 │   │
-│   └── MOVE → match current_waypoint.type
+│   └── PlayerState.MOVE → (null guard) match current_waypoint.type
 │       ├── "sequence" → compute_sequence_move_target_direction()
 │       │                 compute_sequence_move_lateral_damping()
 │       └── "shift"    → compute_shift_move_target_direction()
 │
-├── [STEERING]
-│   ├── Xa (distance > ship_length × 3) → Fajen (gán angular_velocity)
-│   └── Gần (distance ≤ ship_length × 3) → update_rotation (quaternion lerp)
+├── [TẦNG 2: STEERING]
+│   ├── is_energy_turning → update_rotation() (ratio ×3 từ recalculate_power_ratios)
+│   ├── Xa (distance > ship_length × 5) → Fajen Warren
+│   └── Gần (distance ≤ ship_length × 5) → update_rotation (manual)
 │
-├── apply_roll_clamp(state)
-├── apply_pitch_clamp(state)
-└── [debug labels]
+└── [TẦNG 3: STABILIZE]
+    ├── apply_roll_clamp(state)
+    └── apply_pitch_clamp(state)
 ```
 
 > **Nguyên tắc Kinematic Override:**
-> - KHÔNG dùng `apply_central_force` / `apply_torque` (force-based) cho main movement
+> - KHÔNG dùng `apply_central_force` / `apply_torque` cho main movement
 > - THAY VÀO ĐÓ: gán trực tiếp `state.linear_velocity` (qua lateral damping) + `state.angular_velocity`
 > - Chỉ `handle_state_idle` và `compute_*_thrust_control` dùng `apply_central_force` (lực đẩy/phang)
 > - Steering dùng **velocity gán**, không dùng torque
@@ -46,17 +47,17 @@ _integrate_forces(state)
 ```
 PlayerState.IDLE trong _integrate_forces:
 ├── handle_state_idle(delta)
-│   └── apply_central_force(-linear_velocity * max_thrust_force * ratio * 0.5)
+│   └── apply_central_force(-linear_velocity * max_thrust_force * linear_power_to_mass_ratio * 0.5)
 │       → Phanh bằng lực ngược chiều
 │
 ├── apply_roll_correction(state, delta)   ← Lerp angular velocity để roll về 0
 ├── apply_pitch_correction(state, delta)  ← Lerp angular velocity để pitch cân bằng
 │
 └── Khi current_waypoint == null và linear_velocity != Vector3.ZERO:
-    ├── state.linear_velocity.move_toward(ZERO, linear_damp_value * ratio * delta)
-    ├── state.angular_velocity.lerp(ZERO, angular_damp_value * rot_ratio * delta)
-    ├── lateral_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)
-    └── forward_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)
+    ├── state.linear_velocity.move_toward(ZERO, linear_damp_value * linear_power_to_mass_ratio * delta)
+    ├── state.angular_velocity.lerp(ZERO, angular_damp_value * rotation_power_to_mass_ratio * delta)
+    ├── lateral_velocity.move_toward(ZERO, lateral_damp_value * linear_power_to_mass_ratio * delta)
+    └── forward_velocity.move_toward(ZERO, lateral_damp_value * linear_power_to_mass_ratio * delta)
 ```
 
 **Điều kiện chuyển vào IDLE:**
@@ -66,11 +67,11 @@ PlayerState.IDLE trong _integrate_forces:
 
 ---
 
-## 3. STATE MOVE
+## 3. STATE MOVE — TẦNG 1
 
 ### 3.1 Sequence Move — `compute_sequence_move_target_direction()`
 
-```
+```text
 1. DIRECTION BLENDING:
    distance > blend_arrival_distance (3.0m):
      → current_target_direction = direction_to_target
@@ -88,32 +89,29 @@ PlayerState.IDLE trong _integrate_forces:
 2. rotation_desired_direction = current_target_direction  ← cho steering
 
 3. THRUST CONTROL — compute_sequence_move_thrust_control():
-   braking_dist = v² / (2 * max_thrust_force / mass)
+   braking_dist = v² / (2 * max_thrust_force * linear_power_to_mass_ratio / mass)
 
    alignment ≥ 0.85:
      auto_throttle = alignment³
      distance > braking_dist → tăng ga
-       current_thrust_force → max_thrust
        apply_central_force(heading * thrust * throttle)
      distance ≤ braking_dist → giảm ga (braking blend)
        target_force = max_thrust * (dist / braking_dist) * ratio
-       steering_force = (target_force - current) * heading
-       apply_central_force(steering_force.limit_length(max_thrust))
+       steering_force = (target_force - current) * heading → limit_length(max_thrust)
 
    alignment < 0.85 → phanh
-     auto_throttle → 0
      apply_central_force(-linear_velocity * max_thrust * ratio)
 
 4. LATERAL DAMPING — compute_sequence_move_lateral_damping():
    → forward_velocity = heading * dot(linear_velocity, heading)
    → lateral_velocity = linear_velocity - forward_velocity
-   → lateral_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)
+   → lateral_velocity.lerp(ZERO, lateral_damp_value * linear_power_to_mass_ratio * delta)
    → state.linear_velocity = forward_velocity + lateral_velocity
 ```
 
 ### 3.2 Shift Move — `compute_shift_move_target_direction()`
 
-```
+```text
 1. DIRECTION + ARRIVAL FACING BLEND:
    distance > arrival_radius và chưa threshold:
      → current_target_direction = direction_to_target
@@ -138,15 +136,26 @@ PlayerState.IDLE trong _integrate_forces:
 
 ---
 
-## 4. STEERING
+## 4. TẦNG 2: STEERING
 
-### 4.1 Fajen Warren (xa — distance > ship_length × 3)
+### 4.1 Energy Turn (ưu tiên cao nhất)
 
 ```
-Điều kiện: distance_to_target > ship_length * 3.0
+Điều kiện: is_energy_turning == true
+→ rotation_power_to_mass_ratio đã ×3 bởi recalculate_power_ratios()
+
+update_rotation(state, energy_turn_desired_dir, delta)
+→ Tự động thoát khi heading.angle_to(desired_dir) < 1°
+→ recalculate_power_ratios() → trả ratio về bình thường
+```
+
+### 4.2 Fajen Warren (xa — distance > ship_length × 5.0)
+
+```text
+Điều kiện: distance_to_target > ship_length * 5.0 (tăng từ 3.0 lên 5.0)
 
 current_steering_mode = FAJEN_WARREN
-max_engine_accel = rotation_power_to_mass_ratio  (= (torque + rcs) / mass)
+max_engine_accel = rotation_power_to_mass_ratio  (= (torque + rcs) × multipliers / mass)
 
 1. fajen_steering.compute_fajen_angular_acceleration(
      ship, heading, direction_to_target, target_pos, delta, max_engine_accel)
@@ -167,10 +176,10 @@ max_engine_accel = rotation_power_to_mass_ratio  (= (torque + rcs) / mass)
      → auto_throttle *= clamp(1 - repulsion / 50, 0.1, 1.0)
 ```
 
-### 4.2 Manual Rotation (gần — distance ≤ ship_length × 3)
+### 4.3 Manual Rotation (gần — distance ≤ ship_length × 5.0)
 
-```
-Điều kiện: distance_to_target ≤ ship_length * 3.0
+```text
+Điều kiện: distance_to_target ≤ ship_length * 5.0
 
 current_steering_mode = NONE
 fajen_steering.set_fajen_angular_velocity(Vector2.ZERO)  // reset momentum
@@ -196,8 +205,19 @@ update_rotation(state, rotation_desired_direction, delta):
      → Clamp: max_angular_speed * rotation_power_to_mass_ratio
 
   f. target_angular_velocity = axis * turn_speed
-  g. state.angular_velocity.lerp(target, rotation_power_to_mass * rotation_d * delta)
+  g. state.angular_velocity.lerp(target, rotation_power_to_mass_ratio * rotation_d * delta)
 ```
+
+---
+
+## 5. TẦNG 3: STABILIZE (luôn chạy)
+
+| Function | Effect |
+|---|---|
+| `apply_roll_correction(state, delta)` | Lerp angular velocity để đưa roll về 0 |
+| `apply_pitch_correction(state, delta)` | Lerp angular velocity để giữ pitch cân bằng |
+| `apply_roll_clamp(state)` | Chặn roll vượt `max_roll_angle` (6°) |
+| `apply_pitch_clamp(state)` | Chặn pitch vượt `max_pitch_angle` (10°) |
 
 ---
 

@@ -1,16 +1,48 @@
 # Ship Movement Flow (IDLE → MOVE → IDLE)
 > File: `scripts/movement/ship_movement_integrate.gd` · Kinematic Override via `_integrate_forces()`
+> Cập nhật: 2026-06-26 · Bổ sung 3-tier Priority Pipeline + `recalculate_power_ratios`
 
-## 1. IDLE State
-- **Condition:** `current_waypoint == null`
+---
+
+## 1. Kiến trúc `_integrate_forces` — 3 Tầng Priority Pipeline
+
+```
+_integrate_forces(state)
+│
+├── [TẦNG 1: THRUST + DIRECTION]
+│   └── PlayerState dispatch:
+│       ├── IDLE → phanh, damping, roll/pitch correction
+│       └── MOVE → match current_waypoint.type
+│           ├── "sequence" → direction blending + lateral damping + thrust
+│           └── "shift"    → arrival-facing blend + thrust (ko lateral damping)
+│
+├── [TẦNG 2: STEERING]
+│   ├── Energy turn → update_rotation() (ratio đã được boost bởi recalculate_power_ratios)
+│   ├── Xa (distance > ship_length × 5) → Fajen Warren
+│   └── Gần (distance ≤ ship_length × 5) → Manual rotation
+│
+├── [TẦNG 3: STABILIZE] — luôn chạy
+│   ├── apply_roll_clamp(state)
+│   └── apply_pitch_clamp(state)
+```
+
+> **Nguyên tắc Kinematic Override:**
+> - Gán trực tiếp `state.linear_velocity` (qua lateral damping) + `state.angular_velocity`
+> - Chỉ `handle_state_idle` và `compute_*_thrust_control` dùng `apply_central_force`
+> - Steering dùng **velocity gán**, không dùng torque
+
+---
+
+## 2. IDLE State
+- **Condition:** `current_waypoint == null` (và `PlayerState.IDLE`)
 - **Behavior trong `_integrate_forces` → `PlayerState.IDLE`:**
-  - `handle_state_idle()`: `apply_central_force(-linear_velocity * max_thrust_force * ratio * 0.5)` — phanh
+  - `handle_state_idle()`: `apply_central_force(-linear_velocity * max_thrust_force * linear_power_to_mass_ratio * 0.5)` — phanh
   - `apply_roll_correction(state, delta)` + `apply_pitch_correction(state, delta)` — auto-stabilize
   - Nếu `current_waypoint == null` và `linear_velocity != Vector3.ZERO`:
-    - `state.linear_velocity.move_toward(ZERO, linear_damp_value * ratio * delta)`
-    - `state.angular_velocity.lerp(ZERO, angular_damp_value * rot_ratio * delta)`
-    - `lateral_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)`
-    - `forward_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)`
+    - `state.linear_velocity.move_toward(ZERO, linear_damp_value * linear_power_to_mass_ratio * delta)`
+    - `state.angular_velocity.lerp(ZERO, angular_damp_value * rotation_power_to_mass_ratio * delta)`
+    - `lateral_velocity.move_toward(ZERO, lateral_damp_value * linear_power_to_mass_ratio * delta)`
+    - `forward_velocity.move_toward(ZERO, lateral_damp_value * linear_power_to_mass_ratio * delta)`
 
 ## 2. Adding a Waypoint (`move_to`)
 - **Trigger:** Player clicks → `_unhandled_input` → `input_state_idle()` hoặc `input_state_sequence_move()`
@@ -62,75 +94,51 @@ distance ≤ arrival_radius
   → load_next_waypoint() hoặc về IDLE + set arrival_facing
 ```
 
-### 3C. Steering (Rotation)
+## 5. TẦNG 2: STEERING
 
-**Xa** (distance > ship_length × 3.0): **Fajen Warren** — gán trực tiếp angular_velocity
-```text
-→ current_steering_mode = FAJEN_WARREN
-→ max_engine_accel = rotation_power_to_mass_ratio  (= (torque + rcs) / mass)
-→ fajen_steering.compute_fajen_angular_acceleration(...)
-    → Steering tự tích lũy momentum nội bộ (fajen_angular_velocity Vector2)
-    → Clamp max, damping mọi frame
-→ fajen_vel = fajen_steering.get_fajen_angular_velocity()
-→ state.angular_velocity = yaw_axis * fajen_vel.y + pitch_axis * fajen_vel.x
-→ Nếu total_repulsion > 5.0: auto_throttle *= clamp(1 - repulsion/50, 0.1, 1.0)
-```
+### 5A. Energy Turn (ưu tiên cao nhất)
 
-**Gần** (distance ≤ ship_length × 3.0): **Manual Rotation** (Quaternion-based PD controller)
-```text
-→ current_steering_mode = NONE
-→ fajen_steering.set_fajen_angular_velocity(Vector2.ZERO)  // reset Fajen momentum
-→ update_rotation(state, rotation_desired_direction, delta)
-    → Xây dựng target_basis từ desired_dir + Vector3.UP
-    → diff_quat = target_quat * current_quat.inverse()
-    → axis, angle = diff_quat.get_axis(), diff_quat.get_angle()
-    → Rotation delay detection: nếu angle tăng đột ngột > delay_threshold
-      → delay_timer, angle_change_factor → 0
-    → Fine zone: nếu angle < fine_rad → angle_fine_factor giảm dần
-    → turn_speed = angle * rotation_p * fine_factor * change_factor
-    → target_angular_velocity = axis * turn_speed
-    → state.angular_velocity.lerp(target, rotation_power_to_mass * rotation_d * delta)
-```
+- **Condition:** `is_energy_turning == true` (set bởi `input_state_energy_turn`)
+- **Behavior:**
+  - Reset `rotation_delay_timer`, `angle_change_factor`, `angle_fine_factor`
+  - `lateral_velocity = lerp(ZERO, 0.5 * delta)` — triệt tiêu trượt ngang nhẹ
+  - Gọi `update_rotation(state, energy_turn_desired_dir, delta)`
+  - `rotation_power_to_mass_ratio` đã được boost 3x bởi `recalculate_power_ratios()`
+  - Thoát khi `ship_heading.angle_to(energy_turn_desired_dir) < 1°`
+  - Thoát → gọi `recalculate_power_ratios()` để trả ratio về bình thường
 
-### 3D. Thrust Control — `compute_sequence_move_thrust_control()`
+### 5B. Fajen Warren (xa — distance > ship_length × 5.0)
 
 ```text
-braking_dist = v² / (2 * max_thrust_force / mass)
+current_steering_mode = FAJEN_WARREN
+max_engine_accel = rotation_power_to_mass_ratio
 
-alignment ≥ 0.85:
-  auto_throttle = alignment³
-  distance > braking_dist:  → tăng ga (còn xa)
-    current_thrust_force → max_thrust_force
-    apply_central_force(heading * thrust * throttle)
-  distance ≤ braking_dist:  → giảm ga (vùng phanh)
-    target_force = max_thrust * (dist / braking_dist) * ratio
-    steering_force = (target_force - current) * heading
-    apply_central_force(steering_force.limit_length(max_thrust))
-
-alignment < 0.85:
-  → Phanh: auto_throttle → 0
-  → apply_central_force(-linear_velocity * max_thrust * ratio)
+1. fajen_steering.compute_fajen_angular_acceleration(...)
+   → Steering tự tích lũy momentum nội bộ
+2. state.angular_velocity = yaw * fajen_vel.y + pitch * fajen_vel.x
+3. Danger throttle: total_repulsion > 5.0
+   → auto_throttle *= clamp(1 - repulsion/50, 0.1, 1.0)
 ```
 
-### 3E. Shift Thrust Control — `compute_shift_move_thrust_control()`
+### 5C. Manual Rotation (gần — distance ≤ ship_length × 5.0)
 
 ```text
-Giống sequence nhưng:
-- alignment threshold thấp hơn (0.5 thay vì 0.85)
-- Không có braking blend — chỉ phanh khi distance ≤ braking_dist
+current_steering_mode = NONE
+fajen_steering.set_fajen_angular_velocity(Vector2.ZERO)  // reset Fajen
+
+update_rotation(state, rotation_desired_direction, delta):
+  a. Xây dựng target_basis từ desired_dir + Vector3.UP
+  b. diff_quat = target_quat * current_quat.inverse()
+  c. Rotation delay detection
+  d. Fine zone scaling
+  e. turn_speed = angle * rotation_p * fine_factor * change_factor
+     → Clamp: max_angular_speed * rotation_power_to_mass_ratio
+  f. state.angular_velocity.lerp(target, rotation_power_to_mass * rotation_d * delta)
 ```
 
-### 3F. Lateral Damping
+---
 
-```text
-→ forward_speed = linear_velocity.dot(heading)
-→ forward_velocity = heading * forward_speed
-→ lateral_velocity = linear_velocity - forward_velocity
-→ lateral_velocity.lerp(ZERO, lateral_damp_value * ratio * delta)
-→ state.linear_velocity = forward_velocity + lateral_velocity
-```
-
-## 4. Always-on Corrections (chạy sau steering mỗi frame)
+## 6. TẦNG 3: STABILIZE (luôn chạy)
 
 | Function | Effect |
 |---|---|
@@ -139,8 +147,40 @@ Giống sequence nhưng:
 | `apply_roll_clamp(state)` | Chặn roll vượt `max_roll_angle` (6°) |
 | `apply_pitch_clamp(state)` | Chặn pitch vượt `max_pitch_angle` (10°) |
 
-## 5. Returning to IDLE
-- **Condition:** Hết waypoint + vừa đến đích (`distance ≤ arrival_radius`)
+---
+
+## 7. Engine Parameters — `recalculate_power_ratios()`
+
+Hàm tập trung tính `linear_power_to_mass_ratio` và `rotation_power_to_mass_ratio`
+dựa trên các flag đang active:
+
+```gdscript
+func recalculate_power_ratios():
+    var combusion_boost = combusion_boost_multiplier if is_combusion_boost_active else 1.0   # 2.0 | 1.0
+    var rotation_boost  = combusion_rotation_multiplier if is_combusion_boost_active else 0.0 # 0.25 | 0.0
+    var turn_boost      = energy_turn_multiplier if is_energy_turning else 1.0                # 3.0  | 1.0
+
+    linear_power_to_mass_ratio   = (max_thrust_force * combusion_boost) / mass
+    rotation_power_to_mass_ratio = ((max_turn_torque + max_turn_torque_rcs) * (combusion_boost + (combusion_boost * rotation_boost)) * turn_boost) / mass
+```
+
+**Công thức rotation chi tiết:**
+```
+rotation_power_to_mass_ratio = (torque + rcs_torque) × (boost + boost × rotation_boost) × turn_boost / mass
+```
+
+Trong đó:
+- `boost` = `combusion_boost_multiplier` (2.0) nếu `is_combusion_boost_active`, else 1.0
+- `rotation_boost` = `combusion_rotation_multiplier` (0.25) nếu boost active, else 0.0
+- → Khi boost: `(2.0 + 2.0 × 0.25) = 2.5×` rotation power
+- `turn_boost` = `energy_turn_multiplier` (3.0) nếu energy turn, else 1.0
+- → Khi cả boost + energy turn: `2.5 × 3.0 = 7.5×` rotation power
+
+---
+
+## 8. Returning to IDLE
+
+- **Condition:** Hết waypoint (`distance ≤ arrival_radius`)
 - **Behavior:**
   - `current_waypoint = null`
   - `change_state(PlayerState.IDLE)`
@@ -149,22 +189,39 @@ Giống sequence nhưng:
 
 ---
 
-## Key Functions (trong `ship_movement_integrate.gd`)
+## Key Functions
 
 | Function | Purpose |
 |---|---|
-| `handle_state_idle(delta)` | Braking force (`apply_central_force`) + reset throttle |
+| `handle_state_idle(delta)` | Braking force + reset throttle |
 | `change_state(new_state)` | Switch PlayerState (IDLE ↔ MOVE) |
 | `move_to(pos, is_sequence)` | Add waypoint, init movement |
 | `clear_all_waypoints()` | Clear queue + remove markers |
 | `load_next_waypoint()` | Pop next waypoint, set as current |
-| `_integrate_forces(state)` | Main physics loop — kinematic override |
-| `compute_sequence_move_target_direction(...)` | Direction blending + thrust control for sequence |
-| `compute_shift_move_target_direction(...)` | Arrival-facing blend for shift waypoints |
-| `compute_sequence_move_thrust_control(...)` | Thrust calc for sequence (alignment + braking) |
-| `compute_shift_move_thrust_control(...)` | Thrust calc for shift (simpler braking) |
+| `_integrate_forces(state)` | Main physics — 3-tier pipeline |
+| `recalculate_power_ratios()` | Recalculate engine ratios from flags |
+| `update_rotation(state, dir, delta)` | Manual steering via quaternion PD |
+| `compute_sequence_move_target_direction(...)` | Direction blending + thrust control |
+| `compute_shift_move_target_direction(...)` | Arrival-facing blend + thrust control |
+| `compute_sequence_move_thrust_control(...)` | Thrust calc with braking blend |
+| `compute_shift_move_thrust_control(...)` | Thrust calc (simpler brake) |
 | `compute_sequence_move_lateral_damping(...)` | Kill lateral velocity (sequence) |
-| `update_rotation(state, desired_dir, delta)` | Manual steering via quaternion PD controller |
-| `apply_roll_correction(...)` / `apply_pitch_correction(...)` | Auto-stabilize roll/pitch |
-| `apply_roll_clamp(...)` / `apply_pitch_clamp(...)` | Hard limit max roll/pitch angles |
-| `create_shift_waypoint(pos)` | Create a shift-type waypoint |
+| `apply_roll_correction/pitch_correction(...)` | Auto-stabilize |
+| `apply_roll_clamp/pitch_clamp(...)` | Hard limit max angles |
+
+
+| `handle_state_idle(delta)` | Braking force + reset throttle |
+| `change_state(new_state)` | Switch PlayerState (IDLE ↔ MOVE) |
+| `move_to(pos, is_sequence)` | Add waypoint, init movement |
+| `clear_all_waypoints()` | Clear queue + remove markers |
+| `load_next_waypoint()` | Pop next waypoint, set as current |
+| `_integrate_forces(state)` | Main physics — 3-tier pipeline |
+| `recalculate_power_ratios()` | Recalculate engine ratios from flags |
+| `update_rotation(state, dir, delta)` | Manual steering via quaternion PD |
+| `compute_sequence_move_target_direction(...)` | Direction blending + thrust control |
+| `compute_shift_move_target_direction(...)` | Arrival-facing blend + thrust control |
+| `compute_sequence_move_thrust_control(...)` | Thrust calc with braking blend |
+| `compute_shift_move_thrust_control(...)` | Thrust calc (simpler brake) |
+| `compute_sequence_move_lateral_damping(...)` | Kill lateral velocity (sequence) |
+| `apply_roll_correction/pitch_correction(...)` | Auto-stabilize |
+| `apply_roll_clamp/pitch_clamp(...)` | Hard limit max angles |

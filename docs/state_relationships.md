@@ -1,5 +1,189 @@
-# State Machine Relationships — PlayerState / FlightInputState / InputMovingState
-> File chính: `scripts/movement/ship_movement_integrate.gd` · Cập nhật: 2026-06-23
+# State Machine Relationships — PlayerState / FlightInputState / Engine Flags
+> File chính: `scripts/movement/ship_movement_integrate.gd` · Cập nhật: 2026-06-26
+
+---
+
+## 1. Tổng quan — 3 lớp state riêng biệt
+
+Có **3 enum state** trong `ship_movement_integrate.gd`, mỗi enum phục vụ 1 layer khác nhau:
+
+```text
+┌─────────────────────────────────────────────────────┐
+│                  LỚP 1: VẬT LÝ                       │
+│              PlayerState {IDLE, MOVE}                 │
+│  Điều khiển: _integrate_forces(), _physics_process()  │
+│  Biến: current_state                                  │
+├─────────────────────────────────────────────────────┤
+│                  LỚP 2: INPUT                         │
+│        FlightInputState {IDLE, SEQUENCE_MOVE,         │
+│                          SHIFT_MOVE, ENERGY_TURN}     │
+│  Điều khiển: _unhandled_input(), process_flight_input │
+│  + inner state (SequenceMoveState / InputShiftState)  │
+│  Biến: current_input_state                            │
+├─────────────────────────────────────────────────────┤
+│              LỚP 3: ENGINE FLAGS                      │
+│   is_combusion_boost_active  → boost multipliers     │
+│   is_energy_turning          → rotation ×3            │
+│   recalculate_power_ratios() → centralized update    │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. PlayerState — Lớp vật lý
+
+**Mục đích:** Xác định ship đang bay hay đứng im, ảnh hưởng đến `_integrate_forces`.
+
+| Giá trị | Ý nghĩa | Xử lý trong `_integrate_forces` |
+|---------|---------|-------------------------------|
+| `IDLE` | Ship đứng im | `handle_state_idle` → phanh, damping, roll/pitch correction |
+| `MOVE` | Ship đang bay tới waypoint | Dispatch theo `current_waypoint.type`: "sequence" hoặc "shift" |
+
+**Chuyển đổi:**
+```
+IDLE ── move_to() → MOVE
+MOVE ── hết waypoint → IDLE
+```
+
+**Code tham chiếu:** `change_state()`, `_integrate_forces()`, `handle_state_idle()`
+
+---
+
+## 3. FlightInputState — Lớp input state machine
+
+**Mục đích:** Xác định **người chơi đang làm gì với chuột** — dispatch input event đến handler phù hợp.
+
+| Giá trị | Kích hoạt | Inner State | Hành vi |
+|---------|-----------|-------------|---------|
+| `IDLE` | Mặc định | (không) | Click → move_to hoặc vào SEQUENCE_MOVE/SHIFT_MOVE/ENERGY_TURN |
+| `SEQUENCE_MOVE` | Giữ `sequence_move` + click | `HOLD_MOUSE` → `CHANGE_DIRECTION` | Chờ click nhanh hoặc hold + drag để set arrival facing |
+| `SHIFT_MOVE` | Nhấn `direction_shift_move` | `DRAG_MOUSE_AND_OFFSET` → `CHANGE_DIRECTION` | Drag chọn vị trí, click để set arrival facing |
+| `ENERGY_TURN` | Nhấn `energy_turn` | `DRAG_MOUSE_AND_OFFSET` | Drag chọn hướng trên XZ → nhấn "move" → xoay 3x trong physics |
+
+### Inner States
+
+**SequenceMoveState** (dùng khi `FlightInputState.SEQUENCE_MOVE`):
+
+| Giá trị | Ý nghĩa |
+|---------|---------|
+| `NONE` | Chưa vào sequence |
+| `HOLD_MOUSE` | Đang giữ chuột, tích lũy `input_hold_timer`. Nếu release sớm → click nhanh. Nếu timer ≥ `input_hold_threshold` (0.2s) → chuyển `CHANGE_DIRECTION` |
+| `CHANGE_DIRECTION` | Đã giữ đủ lâu, drag → update preview arrow. Release → confirm arrival_facing |
+
+**InputShiftState** (dùng khi `FlightInputState.SHIFT_MOVE`):
+
+| Giá trị | Ý nghĩa |
+|---------|---------|
+| `NONE` | Chưa vào shift |
+| `DRAG_MOUSE_AND_OFFSET` | Đang di chuột, cập nhật `shift_target_position`, clamp bán kính. Press "move" → chuyển `CHANGE_DIRECTION` |
+| `CHANGE_DIRECTION` | Drag → update preview arrow. Press "move" + `input_delay_timer > 0.1s` → confirm arrival_facing, về IDLE |
+
+**InputEnergyTurnState** (dùng khi `FlightInputState.ENERGY_TURN`):
+
+| Giá trị | Ý nghĩa |
+|---------|---------|
+| `NONE` | Chưa vào energy turn |
+| `DRAG_MOUSE_AND_OFFSET` | Đang di chuột chọn hướng. Press "move" → set `is_energy_turning=true` + `recalculate_power_ratios()` + về IDLE |
+
+### Sơ đồ state machine
+
+```text
+                         ┌──────────┐
+          ┌──────────────│   IDLE   │──────────────────────────┐
+          │              └──────────┘                          │
+          │ click + seq         │ press shift    press energy  │
+          ▼                     │                  │           ▼
+┌──────────────────┐            │                  │  ┌──────────────────────┐
+│  SEQUENCE_MOVE   │◄───────────┘                  │  │     SHIFT_MOVE       │
+│                  │                              │  │                      │
+│ inner:           │                              │  │ inner:               │
+│ HOLD_MOUSE       │                              │  │ DRAG_MOUSE_AND_      │
+│   ├ release<0.2s│→ IDLE (waypoint mới)         │  │   OFFSET              │
+│   └ timer≥0.2s  │→ CHANGE_DIRECTION            │  │   ├ press "move"     │→ CHANGE_DIR
+│                  │                              │  │   └ press shift     │→ IDLE (cancel)
+│ CHANGE_DIRECTION │                              │  │                      │
+│   ├ drag        │→ preview vàng                │  │ CHANGE_DIRECTION     │
+│   └ release     │→ confirm facing → IDLE       │  │   ├ drag            │→ preview vàng
+│                  │                              │  │   └ press "move"    │→ confirm → IDLE
+└──────────────────┘                              │  └──────────────────────┘
+                                                  ▼
+                              ┌──────────────────────────┐
+                              │      ENERGY_TURN         │
+                              │                          │
+                              │ inner:                   │
+                              │ DRAG_MOUSE_AND_OFFSET    │
+                              │   ├ drag       │→ cập nhật target XZ
+                              │   ├ press "move"│→ is_energy_turning=true
+                              │   │             │→ recalculate_power_ratios()
+                              │   │             │→ IDLE → xoay 3x trong physics
+                              │   └ press energy│→ IDLE (cancel)
+                              └──────────────────────────┘
+```
+
+**Code tham chiếu:** `_unhandled_input()`, `_change_flight_state()`, `process_flight_input()`, `input_state_idle()`, `input_state_sequence_move()`, `input_state_shift_move()`
+
+---
+
+## 4. Engine Flags — Ảnh hưởng đến Power Ratios
+
+Các flag move ảnh hưởng đến `linear_power_to_mass_ratio` và `rotation_power_to_mass_ratio`
+qua hàm `recalculate_power_ratios()`:
+
+```text
+Flag toggle → recalculate_power_ratios()
+                │
+                ├── combusion_boost = 2.0  nếu is_combusion_boost_active
+                │                       else 1.0
+                ├── rotation_boost  = 0.25 nếu is_combusion_boost_active
+                │                       else 0.0
+                └── turn_boost      = 3.0  nếu is_energy_turning
+                                        else 1.0
+
+linear_power_to_mass_ratio   = (max_thrust_force × combusion_boost) / mass
+rotation_power_to_mass_ratio = ((max_turn_torque + max_turn_torque_rcs) × (combusion_boost + combusion_boost × rotation_boost) × turn_boost) / mass
+```
+
+Xem chi tiết tại [move_mechanics.md](./move_mechanics.md).
+
+---
+
+## 5. Mối quan hệ giữa các state
+
+### Luồng thực tế:
+
+```
+Input Event
+  │
+  ▼
+FlightInputState (current_input_state)
+  │── IDLE           → không ảnh hưởng trực tiếp đến PlayerState / Engine Flags
+  │── SEQUENCE_MOVE  → không ảnh hưởng trực tiếp
+  └── SHIFT_MOVE     → không ảnh hưởng trực tiếp
+  └── ENERGY_TURN    → khi confirm: is_energy_turning = true, recalculate_power_ratios()
+         │
+         │ (khi click xác nhận hoặc click di chuyển)
+         ▼
+PlayerState (current_state)
+  │── IDLE → ship đứng im, phanh + damping
+  └── MOVE → ship bay tới waypoint, dispatch theo type
+```
+
+> `FlightInputState` quyết định **người chơi đang thao tác gì**.
+> `PlayerState` quyết định **ship đang làm gì về mặt vật lý**.
+> `Engine Flags` quyết định **sức mạnh engine**.
+> Cả 3 **độc lập** và không khóa chặt nhau.
+
+### Ví dụ:
+- `FlightInputState.IDLE` + `PlayerState.MOVE`: người chơi không làm gì, ship đang bay
+- `FlightInputState.SHIFT_MOVE` + `PlayerState.MOVE`: người chơi đang drag shift waypoint trong khi ship vẫn bay
+- `FlightInputState.ENERGY_TURN` + `PlayerState.IDLE`: người chơi đang chọn hướng xoay
+- `PlayerState.MOVE` + `is_energy_turning: true`: ship đang xoay tại chỗ (energy turn đã override rotation)
+
+---
+
+## 6. Cách Thêm Move Mới
+
+Xem hướng dẫn chi tiết tại [move_mechanics.md](./move_mechanics.md#5-thêm-move-mới).
 
 ---
 
